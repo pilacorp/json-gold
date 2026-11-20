@@ -290,10 +290,16 @@ func (c *Context) parse(localContext interface{}, remoteContexts []string, parsi
 			// 3.2.4
 			remoteContextsCpy := make([]string, 0, len(remoteContexts))
 			copy(remoteContextsCpy, remoteContexts)
+			// JSON-LD 1.1 processes a remote context with that document's URL
+			// as the base, so a relative @import resolves next to it. The
+			// active context keeps the base it had before this context.
+			savedBase := result.Values.Base
+			result.Values.Base = uri
 			resultRef, err := result.parse(context, remoteContextsCpy, true, true, false, overrideProtected)
 			if err != nil {
 				return nil, err
 			}
+			resultRef.Values.Base = savedBase
 			result = resultRef
 			// 3.2.5
 			continue
