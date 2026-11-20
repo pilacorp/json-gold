@@ -50,7 +50,7 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 
 	// use any scoped context on activeProperty
 	if td := activeCtx.GetTermDefinition(activeProperty); td != nil && td.HasContext {
-		newCtx, err := activeCtx.parse(td.Context, make([]string, 0), false, true, false, true)
+		newCtx, err := activeCtx.parse(td.Context, activeCtx.Values.Base, make([]string, 0), false, true, false, true)
 		if err != nil {
 			return nil, err
 		}
@@ -98,7 +98,7 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 
 		// apply property-scoped context after reverting term-scoped context
 		if td := inputCtx.GetTermDefinition(activeProperty); td != nil && td.Context != nil {
-			newCtx, err := activeCtx.parse(td.Context, nil, false, true, false, true)
+			newCtx, err := activeCtx.parse(td.Context, activeCtx.Values.Base, nil, false, true, false, true)
 			if err != nil {
 				return nil, err
 			}
@@ -125,7 +125,7 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 			sort.Strings(types)
 			for _, tt := range types {
 				if td := inputCtx.GetTermDefinition(tt); td != nil && td.HasContext {
-					newCtx, err := activeCtx.parse(td.Context, nil, false, false, false, false)
+					newCtx, err := activeCtx.parse(td.Context, activeCtx.Values.Base, nil, false, false, false, false)
 					if err != nil {
 						return nil, err
 					}

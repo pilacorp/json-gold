@@ -200,7 +200,7 @@ func CopyContext(ctx *Context) *Context {
 // than just parsing the context. In particular, we need to check if additional logic is required
 // to load remote scoped contexts.
 func (c *Context) Parse(localContext interface{}) (*Context, error) {
-	return c.parse(localContext, make([]string, 0), false, true, false, false)
+	return c.parse(localContext, c.Values.Base, make([]string, 0), false, true, false, false)
 }
 
 // parse processes a local context, retrieving any URLs as necessary, and
@@ -209,7 +209,7 @@ func (c *Context) Parse(localContext interface{}) (*Context, error) {
 // If parsingARemoteContext is true, localContext represents a remote context
 // that has been parsed and sent into this method. This must be set to know
 // whether to propagate the @base key from the context to the result.
-func (c *Context) parse(localContext interface{}, remoteContexts []string, parsingARemoteContext, propagate,
+func (c *Context) parse(localContext interface{}, baseURL string, remoteContexts []string, parsingARemoteContext, propagate,
 	protected, overrideProtected bool) (*Context, error) { //nolint:unparam
 
 	// normalize local context to an array of @context objects
@@ -264,7 +264,7 @@ func (c *Context) parse(localContext interface{}, remoteContexts []string, parsi
 			result = ctx
 		// 3.2)
 		case string:
-			uri := Resolve(result.Values.Base, ctx)
+			uri := Resolve(baseURL, ctx)
 			// 3.2.2
 			for _, remoteCtx := range remoteContexts {
 				if remoteCtx == uri {
@@ -290,16 +290,14 @@ func (c *Context) parse(localContext interface{}, remoteContexts []string, parsi
 			// 3.2.4
 			remoteContextsCpy := make([]string, 0, len(remoteContexts))
 			copy(remoteContextsCpy, remoteContexts)
-			// JSON-LD 1.1 processes a remote context with that document's URL
-			// as the base, so a relative @import resolves next to it. The
-			// active context keeps the base it had before this context.
-			savedBase := result.Values.Base
-			result.Values.Base = uri
-			resultRef, err := result.parse(context, remoteContextsCpy, true, true, false, overrideProtected)
+			// JSON-LD 1.1 §4.1.2 step 5.2.6: process the remote context
+			// with its own URL as base so that @import and nested context
+			// IRIs resolve next to it.  The active context's base stays
+			// the document base.
+			resultRef, err := result.parse(context, uri, remoteContextsCpy, true, true, false, overrideProtected)
 			if err != nil {
 				return nil, err
 			}
-			resultRef.Values.Base = savedBase
 			result = resultRef
 			// 3.2.5
 			continue
@@ -346,7 +344,7 @@ func (c *Context) parse(localContext interface{}, remoteContexts []string, parsi
 			if !isString {
 				return nil, NewJsonLdError(InvalidImportValue, "@import must be a string")
 			}
-			uri := Resolve(result.Values.Base, importStr)
+			uri := Resolve(baseURL, importStr)
 
 			rd, err := c.options.DocumentLoader.LoadDocument(uri)
 			if err != nil {

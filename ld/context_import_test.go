@@ -19,6 +19,42 @@ func (l *urlDocumentLoader) LoadDocument(u string) (*RemoteDocument, error) {
 	return &RemoteDocument{DocumentURL: u, Document: doc}, nil
 }
 
+// A relative @vocab in a remote context must resolve against the document
+// base, not against the context URL. JSON-LD 1.1 API §4.1.2 step 5.6.3
+// resolves @import against the context URL, but @vocab resolves against the
+// base IRI from the active context (the document).
+func TestRemoteContextRelativeVocabUsesDocumentBase(t *testing.T) {
+	loader := &urlDocumentLoader{docs: map[string]interface{}{
+		"https://ctx.org/c/a.jsonld": map[string]interface{}{
+			"@context": map[string]interface{}{
+				"@version": 1.1,
+				"@vocab":   "v/",
+			},
+		},
+	}}
+	doc := map[string]interface{}{
+		"@context": "https://ctx.org/c/a.jsonld",
+		"@id":      "urn:s:1",
+		"name":     "Alice",
+	}
+	opts := NewJsonLdOptions("https://doc.org/d/doc.jsonld")
+	opts.DocumentLoader = loader
+	opts.Format = "application/n-quads"
+	out, err := NewJsonLdProcessor().ToRDF(doc, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quads := out.(string)
+	want := "https://doc.org/d/v/name"
+	bad := "https://ctx.org/c/v/name"
+	if strings.Contains(quads, bad) {
+		t.Fatalf("@vocab resolved against context URL:\n%s", quads)
+	}
+	if !strings.Contains(quads, want) {
+		t.Fatalf("@vocab did not resolve against document base:\n%s\nwant predicate %s", quads, want)
+	}
+}
+
 func TestRemoteContextRelativeImportUsesContextURL(t *testing.T) {
 	loader := &urlDocumentLoader{docs: map[string]interface{}{
 		"https://example.org/ctx/a.jsonld": map[string]interface{}{
