@@ -87,7 +87,7 @@ func toNQuad(triple *Quad, graphName string) string {
 		q += o.GetValue()
 	} else {
 		literal := o.(Literal)
-		escaped := escape(literal.GetValue())
+		escaped := escapeLiteral(literal.GetValue())
 		q += "\"" + escaped + "\""
 		if literal.Datatype == RDFLangString {
 			q += "@" + literal.Language
@@ -117,6 +117,39 @@ func escape(str string) string {
 	str = strings.ReplaceAll(str, "\r", "\\r")
 	str = strings.ReplaceAll(str, "\t", "\\t")
 	return str
+}
+
+// escapeLiteral writes a literal in the canonical N-Quads form used by
+// RDFC-1.0. Named escapes cover the five controls plus quote and backslash.
+// The other C0 controls and DEL are \u00XX with uppercase hex.
+func escapeLiteral(str string) string {
+	var b strings.Builder
+	b.Grow(len(str))
+	for _, r := range str {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\b':
+			b.WriteString(`\b`)
+		case '\f':
+			b.WriteString(`\f`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if r <= 0x1F || r == 0x7F {
+				fmt.Fprintf(&b, `\u%04X`, r)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return b.String()
 }
 
 type lineScanner interface {
