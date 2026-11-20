@@ -697,7 +697,10 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 		}
 
 		valueMap, isMap := value.(map[string]interface{})
-		if termCtx.HasContainerMapping(key, "@language") && isMap {
+		// The container, index, and reverse of this key come from the active
+		// context. termCtx is only the context the value is expanded with, and
+		// a scoped context of null would otherwise drop @container.
+		if activeCtx.HasContainerMapping(key, "@language") && isMap {
 			var expandedValueList []interface{}
 
 			dir, hasDir := td.Direction, td.HasDirection
@@ -735,11 +738,11 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 				}
 			}
 			expandedValue = expandedValueList
-		} else if termCtx.HasContainerMapping(key, "@index") && isMap { // 7.6)
-			asGraph := termCtx.HasContainerMapping(key, "@graph")
+		} else if activeCtx.HasContainerMapping(key, "@index") && isMap { // 7.6)
+			asGraph := activeCtx.HasContainerMapping(key, "@graph")
 			indexKey := "@index"
-			if tdKey := termCtx.GetTermDefinition(key); tdKey != nil && tdKey.Index != "" {
-				indexKey = tdKey.Index
+			if td != nil && td.Index != "" {
+				indexKey = td.Index
 			}
 			var propertyIndex string
 			if indexKey != "@index" {
@@ -753,14 +756,14 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 			if err != nil {
 				return err
 			}
-		} else if termCtx.HasContainerMapping(key, "@id") && isMap {
-			asGraph := termCtx.HasContainerMapping(key, "@graph")
+		} else if activeCtx.HasContainerMapping(key, "@id") && isMap {
+			asGraph := activeCtx.HasContainerMapping(key, "@graph")
 			expandedValue, err = api.expandIndexMap(termCtx, key, valueMap, "@id", asGraph, "",
 				opts, keyPointer)
 			if err != nil {
 				return err
 			}
-		} else if termCtx.HasContainerMapping(key, "@type") && isMap {
+		} else if activeCtx.HasContainerMapping(key, "@type") && isMap {
 			// since container is @type, revert type scoped context when expanding
 			expandedValue, err = api.expandIndexMap(termCtx.RevertToPreviousContext(), key, valueMap, "@type",
 				false, "", opts, keyPointer)
@@ -798,7 +801,7 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 			continue
 		}
 		// 7.9)
-		if termCtx.HasContainerMapping(key, "@list") {
+		if activeCtx.HasContainerMapping(key, "@list") {
 			expandedValueMap, isMap := expandedValue.(map[string]interface{})
 			_, containsList := expandedValueMap["@list"]
 			if !isMap || !containsList {
@@ -813,9 +816,9 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 			}
 		}
 
-		isContainerGraph := termCtx.HasContainerMapping(key, "@graph")
-		isContainerID := termCtx.HasContainerMapping(key, "@id")
-		isContainerIndex := termCtx.HasContainerMapping(key, "@index")
+		isContainerGraph := activeCtx.HasContainerMapping(key, "@graph")
+		isContainerID := activeCtx.HasContainerMapping(key, "@id")
+		isContainerIndex := activeCtx.HasContainerMapping(key, "@index")
 		if isContainerGraph && !isContainerID && !isContainerIndex {
 			evList := Arrayify(expandedValue)
 			rVal := make([]interface{}, 0)
@@ -829,7 +832,7 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 		}
 
 		// 7.10)
-		if termCtx.IsReverseProperty(key) {
+		if activeCtx.IsReverseProperty(key) {
 			var reverseMap map[string]interface{}
 			if reverseValue, containsReverse := resultMap["@reverse"]; containsReverse {
 				// 7.10.2)
