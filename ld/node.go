@@ -304,21 +304,27 @@ func objectToRDF(item interface{}, issuer *IdentifierIssuer, graphName string, t
 				if datatype != RDFJSONLiteral {
 					return NewLiteral(value.(string), datatype.(string), ""), triples, nil
 				} else {
-					jsonLiteralValByte, err := json.Marshal(value)
+					// jsoncanonicalizer.Transform takes only an object or
+					// an array, so a primitive is canonicalized inside a
+					// one-item array and the brackets are dropped. Its
+					// encoding/json form is not JCS: it escapes <, > and &.
+					_, isMap := value.(map[string]interface{})
+					_, isArr := value.([]interface{})
+					wrap := !isMap && !isArr
+					toCanon := value
+					if wrap {
+						toCanon = []interface{}{value}
+					}
+					marshaled, err := json.Marshal(toCanon)
 					if err != nil {
 						return nil, triples, err
 					}
-					// jsoncanonicalizer.Transform only handles
-					// objects and arrays. Primitive JSON values
-					// (strings, numbers, booleans, null) are already
-					// canonical as marshaled by encoding/json.
-					switch value.(type) {
-					case map[string]interface{}, []interface{}:
-						canonicalJSON, err := jsoncanonicalizer.Transform(jsonLiteralValByte)
-						if err != nil {
-							return nil, triples, err
-						}
-						jsonLiteralValByte = canonicalJSON
+					jsonLiteralValByte, err := jsoncanonicalizer.Transform(marshaled)
+					if err != nil {
+						return nil, triples, err
+					}
+					if wrap {
+						jsonLiteralValByte = jsonLiteralValByte[1 : len(jsonLiteralValByte)-1]
 					}
 
 					return NewLiteral(string(jsonLiteralValByte), datatype.(string), ""), triples, nil

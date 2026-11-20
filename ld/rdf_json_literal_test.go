@@ -94,3 +94,30 @@ func TestJsonLiteralMap(t *testing.T) {
 		t.Fatalf("map literal wrong:\n%s\nwant %s", quads, want)
 	}
 }
+
+// A primitive under @json is written in JCS form (RFC 8785 §3.2.2.2): only
+// quote, backslash and control characters are escaped, so <, > and & stay as
+// they are. encoding/json would write them as \u003c, \u003e and \u0026.
+func TestJsonLiteralStringIsJCS(t *testing.T) {
+	doc := map[string]interface{}{
+		"@context": map[string]interface{}{
+			"claim": map[string]interface{}{
+				"@id":   "https://example.org/claim",
+				"@type": "@json",
+			},
+		},
+		"@id":   "urn:ex:1",
+		"claim": "a<b&c>",
+	}
+	opts := NewJsonLdOptions("")
+	opts.Format = "application/n-quads"
+	out, err := NewJsonLdProcessor().ToRDF(doc, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quads := out.(string)
+	want := `"\"a<b&c>\""^^<http://www.w3.org/1999/02/22-rdf-syntax-ns#JSON>`
+	if !strings.Contains(quads, want) {
+		t.Fatalf("string literal not in JCS form:\n%s\nwant %s", quads, want)
+	}
+}
