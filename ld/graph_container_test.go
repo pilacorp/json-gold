@@ -102,3 +102,27 @@ func TestGraphContainerStringValueReturnsError(t *testing.T) {
 		t.Fatalf("expected InvalidValueObject error, got %v", err)
 	}
 }
+
+// A list object under a term with @container: @graph is wrapped as
+// {"@graph": [{"@list": [...]}]}, so it lands in the graph with no subject.
+// GenerateNodeMap must return an error for it too instead of panicking.
+func TestGraphContainerListValueReturnsError(t *testing.T) {
+	const doc = `{
+		"@context": {
+			"@version": 1.1,
+			"g": {"@id": "https://example.org/g", "@container": "@graph"}
+		},
+		"@id": "urn:ex:1",
+		"g": {"@list": ["a"]}
+	}`
+	var input interface{}
+	if err := json.Unmarshal([]byte(doc), &input); err != nil {
+		t.Fatal(err)
+	}
+	opts := NewJsonLdOptions("")
+	opts.Format = "application/n-quads"
+	_, err := NewJsonLdProcessor().ToRDF(input, opts)
+	if err == nil {
+		t.Fatal("expected an error for a list object landing in a graph, got nil")
+	}
+}
