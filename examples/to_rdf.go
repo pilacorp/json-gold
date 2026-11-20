@@ -18,7 +18,7 @@
 package main
 
 import (
-	"github.com/piprate/json-gold/ld"
+	"github.com/pilacorp/json-gold/ld"
 	"log"
 	"os"
 )

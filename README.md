@@ -1,8 +1,23 @@
 # JSON-goLD
 
-[![GoDoc](https://godoc.org/github.com/piprate/json-gold?status.svg)](https://pkg.go.dev/github.com/piprate/json-gold)
+[![GoDoc](https://godoc.org/github.com/pilacorp/json-gold?status.svg)](https://pkg.go.dev/github.com/pilacorp/json-gold)
 [![ci](https://github.com/piprate/json-gold/actions/workflows/ci.yml/badge.svg)](https://github.com/piprate/json-gold/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/piprate/json-gold/branch/master/graph/badge.svg?token=JvEEDMmppm)](https://codecov.io/gh/piprate/json-gold)
+
+This is the Pila fork of [piprate/json-gold](https://github.com/piprate/json-gold),
+published under its own module path so that projects depending on it get the
+fixes through normal `go get`, not a `replace` directive:
+
+```shell
+go get github.com/pilacorp/json-gold@v0.9.1-pila.1
+```
+
+```go
+import "github.com/pilacorp/json-gold/ld"
+```
+
+Fixes are also sent upstream; once upstream carries them, dependents can move
+back to `github.com/piprate/json-gold`.
 
 This library is an implementation of the [JSON-LD 1.1](http://json-ld.org/) specification in Go.
 It supports both URDNA2015 and URGNA2012 RDF dataset normalisation algorithms.

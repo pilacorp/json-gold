@@ -18,7 +18,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	. "github.com/piprate/json-gold/ld"
+	. "github.com/pilacorp/json-gold/ld"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
