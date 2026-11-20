@@ -225,7 +225,7 @@ var nilIRI = NewIRI(RDFNil)
 
 // GraphToRDF creates an array of RDF triples for the given graph.
 func (ds *RDFDataset) GraphToRDF(graphName string, graph map[string]interface{}, issuer *IdentifierIssuer,
-	produceGeneralizedRdf bool) {
+	produceGeneralizedRdf bool) error {
 	// 4.2)
 	triples := make([]*Quad, 0)
 	// 4.3)
@@ -272,7 +272,11 @@ func (ds *RDFDataset) GraphToRDF(graphName string, graph map[string]interface{},
 
 			for _, item := range values {
 				var object Node
-				object, triples = objectToRDF(item, issuer, graphName, triples)
+				var err error
+				object, triples, err = objectToRDF(item, issuer, graphName, triples)
+				if err != nil {
+					return err
+				}
 				if object != nil {
 					triples = append(triples, NewQuad(subject, predicate, object, graphName))
 				}
@@ -293,6 +297,7 @@ func (ds *RDFDataset) GraphToRDF(graphName string, graph map[string]interface{},
 		}
 	}
 	ds.Graphs[graphName] = sanitisedTriples
+	return nil
 }
 
 // GetQuads returns a list of quads for the given graph

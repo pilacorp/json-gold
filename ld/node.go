@@ -235,7 +235,7 @@ func RdfToObject(n Node, useNativeTypes bool) (map[string]interface{}, error) {
 
 // objectToRDF converts a JSON-LD value object to an RDF literal or a JSON-LD string or
 // node object to an RDF resource.
-func objectToRDF(item interface{}, issuer *IdentifierIssuer, graphName string, triples []*Quad) (Node, []*Quad) {
+func objectToRDF(item interface{}, issuer *IdentifierIssuer, graphName string, triples []*Quad) (Node, []*Quad, error) {
 	// convert value object to RDF
 	if IsValue(item) {
 		itemMap := item.(map[string]interface{})
@@ -273,56 +273,55 @@ func objectToRDF(item interface{}, issuer *IdentifierIssuer, graphName string, t
 			// convert to XSD datatype
 			if isBool {
 				if datatype == nil {
-					return NewLiteral(strconv.FormatBool(booleanVal), XSDBoolean, ""), triples
+					return NewLiteral(strconv.FormatBool(booleanVal), XSDBoolean, ""), triples, nil
 				} else {
-					return NewLiteral(strconv.FormatBool(booleanVal), datatypeStr, ""), triples
+					return NewLiteral(strconv.FormatBool(booleanVal), datatypeStr, ""), triples, nil
 				}
 			} else if (isFloat && !isInteger) || XSDDouble == datatypeStr {
 				canonicalDouble := GetCanonicalDouble(floatVal)
 				if datatype == nil {
-					return NewLiteral(canonicalDouble, XSDDouble, ""), triples
+					return NewLiteral(canonicalDouble, XSDDouble, ""), triples, nil
 				} else {
-					return NewLiteral(canonicalDouble, datatypeStr, ""), triples
+					return NewLiteral(canonicalDouble, datatypeStr, ""), triples, nil
 				}
 			} else {
 				if datatype == nil {
-					return NewLiteral(fmt.Sprintf("%d", int64(floatVal)), XSDInteger, ""), triples
+					return NewLiteral(fmt.Sprintf("%d", int64(floatVal)), XSDInteger, ""), triples, nil
 				} else {
-					return NewLiteral(fmt.Sprintf("%d", int64(floatVal)), datatype.(string), ""), triples
+					return NewLiteral(fmt.Sprintf("%d", int64(floatVal)), datatype.(string), ""), triples, nil
 				}
 			}
 		} else if langVal, hasLang := itemMap["@language"]; hasLang {
 			if datatype == nil {
-				return NewLiteral(value.(string), RDFLangString, langVal.(string)), triples
+				return NewLiteral(value.(string), RDFLangString, langVal.(string)), triples, nil
 			} else {
-				return NewLiteral(value.(string), datatype.(string), langVal.(string)), triples
+				return NewLiteral(value.(string), datatype.(string), langVal.(string)), triples, nil
 			}
 		} else {
 			if datatype == nil {
-				return NewLiteral(value.(string), XSDString, ""), triples
+				return NewLiteral(value.(string), XSDString, ""), triples, nil
 			} else {
 				if datatype != RDFJSONLiteral {
-					return NewLiteral(value.(string), datatype.(string), ""), triples
+					return NewLiteral(value.(string), datatype.(string), ""), triples, nil
 				} else {
-					var jsonLiteralValByte []byte
-					switch v := value.(type) {
-					case string:
-						jsonLiteralValByte = []byte(v)
-					case map[string]interface{}:
-						byteVal, err := json.Marshal(v)
-						if err != nil {
-							return NewLiteral("JSON Marshal error "+err.Error(), datatype.(string), ""), triples
-						}
-
-						jsonLiteralValByte = byteVal
-					}
-
-					canonicalJSON, err := jsoncanonicalizer.Transform(jsonLiteralValByte)
+					jsonLiteralValByte, err := json.Marshal(value)
 					if err != nil {
-						return NewLiteral("JSON Canonicalization error "+err.Error(), datatype.(string), ""), triples
+						return nil, triples, err
+					}
+					// jsoncanonicalizer.Transform only handles
+					// objects and arrays. Primitive JSON values
+					// (strings, numbers, booleans, null) are already
+					// canonical as marshaled by encoding/json.
+					switch value.(type) {
+					case map[string]interface{}, []interface{}:
+						canonicalJSON, err := jsoncanonicalizer.Transform(jsonLiteralValByte)
+						if err != nil {
+							return nil, triples, err
+						}
+						jsonLiteralValByte = canonicalJSON
 					}
 
-					return NewLiteral(string(canonicalJSON), datatype.(string), ""), triples
+					return NewLiteral(string(jsonLiteralValByte), datatype.(string), ""), triples, nil
 				}
 			}
 		}
@@ -337,21 +336,21 @@ func objectToRDF(item interface{}, issuer *IdentifierIssuer, graphName string, t
 		if itemMap, isMap := item.(map[string]interface{}); isMap {
 			id = itemMap["@id"].(string)
 			if IsRelativeIri(id) {
-				return nil, triples
+				return nil, triples, nil
 			}
 		} else {
 			id = item.(string)
 		}
 		if strings.Index(id, "_:") == 0 {
 			// NOTE: once again no need to rename existing blank nodes
-			return NewBlankNode(id), triples
+			return NewBlankNode(id), triples, nil
 		} else {
-			return NewIRI(id), triples
+			return NewIRI(id), triples, nil
 		}
 	}
 }
 
-func parseList(list []interface{}, issuer *IdentifierIssuer, graphName string, triples []*Quad) (Node, []*Quad) {
+func parseList(list []interface{}, issuer *IdentifierIssuer, graphName string, triples []*Quad) (Node, []*Quad, error) {
 
 	var res Node
 	var last interface{}
@@ -366,8 +365,12 @@ func parseList(list []interface{}, issuer *IdentifierIssuer, graphName string, t
 	subj := res
 
 	var obj Node
+	var err error
 	for i := 0; i < len(list)-1; i++ {
-		obj, triples = objectToRDF(list[i], issuer, graphName, triples)
+		obj, triples, err = objectToRDF(list[i], issuer, graphName, triples)
+		if err != nil {
+			return nil, triples, err
+		}
 		next := NewBlankNode(issuer.GetId(""))
 		triples = append(triples,
 			NewQuad(subj, first, obj, graphName),
@@ -378,12 +381,15 @@ func parseList(list []interface{}, issuer *IdentifierIssuer, graphName string, t
 
 	// tail of list
 	if last != nil {
-		obj, triples = objectToRDF(last, issuer, graphName, triples)
+		obj, triples, err = objectToRDF(last, issuer, graphName, triples)
+		if err != nil {
+			return nil, triples, err
+		}
 		triples = append(triples,
 			NewQuad(subj, first, obj, graphName),
 			NewQuad(subj, rest, nilIRI, graphName),
 		)
 	}
 
-	return res, triples
+	return res, triples, nil
 }
