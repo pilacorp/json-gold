@@ -81,6 +81,9 @@ func (api *JsonLdApi) GenerateNodeMap(element interface{}, graphMap map[string]i
 
 	if IsValue(element) {
 		if list == nil {
+			if subjectNode == nil {
+				return nil, NewJsonLdError(InvalidValueObject, "a value object cannot be a node of a graph")
+			}
 			AddValue(subjectNode, activeProperty, element, true, false, false, false)
 		} else {
 			list["@list"] = append(list["@list"].([]interface{}), element)
