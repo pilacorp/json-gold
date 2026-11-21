@@ -1002,7 +1002,8 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 				break
 			}
 		}
-		isSet := isMap && len(mapValue) > 0 && (mapValue["@container"] == "@set" || mapValue["@container"] == nil)
+		containerVal, hasContainer := mapValue["@container"]
+		isSet := isMap && len(mapValue) > 0 && (!hasContainer || containerVal == "@set")
 		if c.processingMode(1.1) && term == "@type" && hasAllowedKeysOnly && isSet {
 			// this is the only case were redefining a keyword is allowed
 		} else {
@@ -1248,14 +1249,23 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 		var container []string
 		containerValueMap := make(map[string]bool)
 		if isArray {
+			if len(containerArray) == 0 {
+				return NewJsonLdError(InvalidContainerMapping, "@container must not be an empty array")
+			}
 			container = make([]string, 0)
 			for _, c := range containerArray {
-				container = append(container, c.(string))
-				containerValueMap[c.(string)] = true
+				cs, isString := c.(string)
+				if !isString {
+					return NewJsonLdError(InvalidContainerMapping, fmt.Sprintf("@container values must be strings: %v", c))
+				}
+				container = append(container, cs)
+				containerValueMap[cs] = true
 			}
+		} else if cs, isString := containerVal.(string); isString {
+			container = []string{cs}
+			containerValueMap[cs] = true
 		} else {
-			container = []string{containerVal.(string)}
-			containerValueMap[containerVal.(string)] = true
+			return NewJsonLdError(InvalidContainerMapping, fmt.Sprintf("@container must be a string or an array of strings: %v", containerVal))
 		}
 
 		validContainers := map[string]bool{
