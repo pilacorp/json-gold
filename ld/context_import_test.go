@@ -1,6 +1,7 @@
 package ld
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -130,6 +131,50 @@ func TestRemoteContextImportAfterRedirectUsesDocumentURL(t *testing.T) {
 	out, err := NewJsonLdProcessor().ToRDF(doc, opts)
 	if err != nil {
 		t.Fatalf("loaded %v: %v", loader.got, err)
+	}
+	want := "<urn:s:1> <https://example.org/y> \"2\" .\n"
+	if out.(string) != want {
+		t.Fatalf("got %q, want %q", out, want)
+	}
+}
+
+// JSON-LD 1.1 API §4.1.2 step 5.2.2 aborts with "context overflow" once
+// remote contexts pass a processor limit; a cycle reaches it.
+func TestRemoteContextCycleIsContextOverflow(t *testing.T) {
+	loader := &urlDocumentLoader{docs: map[string]interface{}{
+		"https://example.org/a.jsonld": map[string]interface{}{"@context": "b.jsonld"},
+		"https://example.org/b.jsonld": map[string]interface{}{"@context": "a.jsonld"},
+	}}
+	opts := NewJsonLdOptions("https://example.org/doc.jsonld")
+	opts.DocumentLoader = loader
+	_, err := NewJsonLdProcessor().Expand(map[string]interface{}{
+		"@context": "https://example.org/a.jsonld",
+		"@id":      "urn:s:1",
+	}, opts)
+	var ldErr *JsonLdError
+	if !errors.As(err, &ldErr) || ldErr.Code != ContextOverflow {
+		t.Fatalf("got %v, want %q", err, ContextOverflow)
+	}
+}
+
+// The same remote context twice in one @context array is not a cycle;
+// JSON-LD 1.1 processes it again.
+func TestRemoteContextRepeatedInArray(t *testing.T) {
+	loader := &urlDocumentLoader{docs: map[string]interface{}{
+		"https://example.org/a.jsonld": map[string]interface{}{
+			"@context": map[string]interface{}{"y": "https://example.org/y"},
+		},
+	}}
+	opts := NewJsonLdOptions("https://example.org/doc.jsonld")
+	opts.DocumentLoader = loader
+	opts.Format = "application/n-quads"
+	out, err := NewJsonLdProcessor().ToRDF(map[string]interface{}{
+		"@context": []interface{}{"https://example.org/a.jsonld", "https://example.org/a.jsonld"},
+		"@id":      "urn:s:1",
+		"y":        "2",
+	}, opts)
+	if err != nil {
+		t.Fatal(err)
 	}
 	want := "<urn:s:1> <https://example.org/y> \"2\" .\n"
 	if out.(string) != want {

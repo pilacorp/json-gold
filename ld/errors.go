@@ -38,6 +38,7 @@ const (
 	LoadingRemoteContextFailed  ErrorCode = "loading remote context failed"
 	InvalidRemoteContext        ErrorCode = "invalid remote context"
 	RecursiveContextInclusion   ErrorCode = "recursive context inclusion"
+	ContextOverflow             ErrorCode = "context overflow"
 	InvalidBaseIRI              ErrorCode = "invalid base IRI"
 	InvalidVocabMapping         ErrorCode = "invalid vocab mapping"
 	InvalidDefaultLanguage      ErrorCode = "invalid default language"

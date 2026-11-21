@@ -203,6 +203,9 @@ func (c *Context) Parse(localContext interface{}) (*Context, error) {
 	return c.parse(localContext, c.Values.Base, make([]string, 0), false, true, false, false)
 }
 
+// maxRemoteContextDepth bounds how deeply remote contexts may nest.
+const maxRemoteContextDepth = 32
+
 // parse processes a local context, retrieving any URLs as necessary, and
 // returns a new active context.
 //
@@ -265,13 +268,11 @@ func (c *Context) parse(localContext interface{}, baseURL string, remoteContexts
 		// 3.2)
 		case string:
 			uri := Resolve(baseURL, ctx)
-			// 3.2.2
-			for _, remoteCtx := range remoteContexts {
-				if remoteCtx == uri {
-					return nil, NewJsonLdError(RecursiveContextInclusion, uri)
-				}
+			// JSON-LD 1.1 §4.1.2 step 5.2.2: a repeated context is processed
+			// again, so only the nesting depth is limited; a cycle reaches it.
+			if len(remoteContexts) >= maxRemoteContextDepth {
+				return nil, NewJsonLdError(ContextOverflow, uri)
 			}
-			remoteContexts = append(remoteContexts, uri)
 
 			// 3.2.3: Dereference context
 			rd, err := c.options.DocumentLoader.LoadDocument(uri)
@@ -287,9 +288,9 @@ func (c *Context) parse(localContext interface{}, baseURL string, remoteContexts
 				return nil, NewJsonLdError(InvalidRemoteContext, context)
 			}
 
-			// 3.2.4
-			remoteContextsCpy := make([]string, 0, len(remoteContexts))
-			copy(remoteContextsCpy, remoteContexts)
+			// 3.2.4: each nested context gets its own copy, so sibling
+			// contexts in one array do not count toward the depth.
+			nested := append(remoteContexts[:len(remoteContexts):len(remoteContexts)], uri)
 			// JSON-LD 1.1 §4.1.2 step 5.2.6: process the remote context
 			// with the documentUrl of the loaded context as base, so that
 			// @import and nested context IRIs resolve next to it even after
@@ -298,7 +299,7 @@ func (c *Context) parse(localContext interface{}, baseURL string, remoteContexts
 			if ctxBase == "" {
 				ctxBase = uri
 			}
-			resultRef, err := result.parse(context, ctxBase, remoteContextsCpy, true, true, false, overrideProtected)
+			resultRef, err := result.parse(context, ctxBase, nested, true, true, false, overrideProtected)
 			if err != nil {
 				return nil, err
 			}
