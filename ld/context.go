@@ -291,10 +291,14 @@ func (c *Context) parse(localContext interface{}, baseURL string, remoteContexts
 			remoteContextsCpy := make([]string, 0, len(remoteContexts))
 			copy(remoteContextsCpy, remoteContexts)
 			// JSON-LD 1.1 §4.1.2 step 5.2.6: process the remote context
-			// with its own URL as base so that @import and nested context
-			// IRIs resolve next to it.  The active context's base stays
-			// the document base.
-			resultRef, err := result.parse(context, uri, remoteContextsCpy, true, true, false, overrideProtected)
+			// with the documentUrl of the loaded context as base, so that
+			// @import and nested context IRIs resolve next to it even after
+			// a redirect. The active context's base stays the document base.
+			ctxBase := rd.DocumentURL
+			if ctxBase == "" {
+				ctxBase = uri
+			}
+			resultRef, err := result.parse(context, ctxBase, remoteContextsCpy, true, true, false, overrideProtected)
 			if err != nil {
 				return nil, err
 			}

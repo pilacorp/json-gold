@@ -6,12 +6,16 @@ import (
 )
 
 type urlDocumentLoader struct {
-	docs map[string]interface{}
-	got  []string
+	docs      map[string]interface{}
+	redirects map[string]string // requested URL -> final URL after redirects
+	got       []string
 }
 
 func (l *urlDocumentLoader) LoadDocument(u string) (*RemoteDocument, error) {
 	l.got = append(l.got, u)
+	if to, ok := l.redirects[u]; ok {
+		u = to
+	}
 	doc, ok := l.docs[u]
 	if !ok {
 		return nil, NewJsonLdError(LoadingDocumentFailed, u)
@@ -97,5 +101,38 @@ func TestRemoteContextRelativeImportUsesContextURL(t *testing.T) {
 	quads := out.(string)
 	if !strings.Contains(quads, "<urn:s:1> <https://example.org/y> \"2\"") {
 		t.Fatalf("imported term missing:\n%s", quads)
+	}
+}
+
+// JSON-LD 1.1 API §4.1.2 step 5.2.6 processes a remote context with "the
+// documentUrl of context document" as base URL, so after a redirect a
+// relative @import resolves next to the final URL.
+func TestRemoteContextImportAfterRedirectUsesDocumentURL(t *testing.T) {
+	loader := &urlDocumentLoader{
+		redirects: map[string]string{"https://old.org/a.jsonld": "https://new.org/ctx/a.jsonld"},
+		docs: map[string]interface{}{
+			"https://new.org/ctx/a.jsonld": map[string]interface{}{
+				"@context": map[string]interface{}{"@version": 1.1, "@import": "b.jsonld"},
+			},
+			"https://new.org/ctx/b.jsonld": map[string]interface{}{
+				"@context": map[string]interface{}{"y": "https://example.org/y"},
+			},
+		},
+	}
+	doc := map[string]interface{}{
+		"@context": "https://old.org/a.jsonld",
+		"@id":      "urn:s:1",
+		"y":        "2",
+	}
+	opts := NewJsonLdOptions("https://example.org/doc.jsonld")
+	opts.DocumentLoader = loader
+	opts.Format = "application/n-quads"
+	out, err := NewJsonLdProcessor().ToRDF(doc, opts)
+	if err != nil {
+		t.Fatalf("loaded %v: %v", loader.got, err)
+	}
+	want := "<urn:s:1> <https://example.org/y> \"2\" .\n"
+	if out.(string) != want {
+		t.Fatalf("got %q, want %q", out, want)
 	}
 }
