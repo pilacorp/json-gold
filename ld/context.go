@@ -1184,9 +1184,12 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 				definition.ID = term
 			}
 			// 15)
+		} else if term == "@type" {
+			// 16) whatever entries the definition holds, before @vocab is tried.
+			definition.ID = "@type"
 		} else if vocabValue := c.Values.Vocab; vocabValue != nil {
 			definition.ID = *vocabValue + term
-		} else if term != "@type" {
+		} else {
 			return NewJsonLdError(InvalidIRIMapping, "relative term definition without vocab mapping")
 		}
 	}
@@ -1345,10 +1348,6 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 		}
 
 		definition.Container = container
-
-		if term == "@type" {
-			definition.ID = "@type"
-		}
 	}
 
 	// property indexing
@@ -2531,6 +2530,19 @@ func (c *Context) Serialize() (map[string]interface{}, error) {
 		// A term set to null has no definition.
 		if definition == nil {
 			ctx[term] = nil
+			continue
+		}
+		// §4.2.2 step 4: @type takes only a non-empty map of @container: @set
+		// and @protected; any other form is a keyword redefinition.
+		if term == "@type" {
+			defn := map[string]interface{}{}
+			if definition.Container != nil {
+				defn["@container"] = "@set"
+			}
+			if definition.Protected || len(defn) == 0 {
+				defn["@protected"] = definition.Protected
+			}
+			ctx[term] = defn
 			continue
 		}
 		langVal, hasLang := definition.Language, definition.HasLanguage
