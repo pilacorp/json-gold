@@ -87,8 +87,9 @@ func validIPLiteral(lit string) bool {
 		if dot < 2 || dot == len(lit)-1 {
 			return false
 		}
-		for _, c := range lit[1:dot] {
-			if !isHexDigit(byte(c)) || c > 0x7f {
+		// A byte of a multi-byte character is never a hex digit.
+		for i := 1; i < dot; i++ {
+			if !isHexDigit(lit[i]) {
 				return false
 			}
 		}
