@@ -106,6 +106,9 @@ func (api *JsonLdApi) Frame(input interface{}, frame []interface{}, opts *JsonLd
 	if err := validateFrame(frame); err != nil {
 		return nil, nil, err
 	}
+	if err := validateSubframes(frame); err != nil {
+		return nil, nil, err
+	}
 
 	// 1.
 	// If frame is an array, set frame to the first member of the array.
@@ -663,6 +666,44 @@ func validateFrame(frame interface{}) error {
 		}
 	}
 
+	return nil
+}
+
+// frameValueKeys hold flags, patterns and defaults, not frames.
+var frameValueKeys = map[string]bool{
+	"@id": true, "@type": true, "@default": true, "@embed": true, "@explicit": true,
+	"@omitDefault": true, "@requireAll": true, "@value": true, "@language": true,
+	"@direction": true, "@index": true,
+}
+
+// validateSubframes applies the frame object rules of Framing §4.1 to every
+// frame nested under a property, @graph, @reverse, @list or @included, so a
+// sub-frame is checked even when no node reaches it.
+func validateSubframes(frame interface{}) error {
+	switch v := frame.(type) {
+	case []interface{}:
+		for _, item := range v {
+			if err := validateSubframes(item); err != nil {
+				return err
+			}
+		}
+	case map[string]interface{}:
+		for key, value := range v {
+			if frameValueKeys[key] {
+				continue
+			}
+			for _, item := range Arrayify(value) {
+				if sub, isMap := item.(map[string]interface{}); isMap {
+					if err := validateFrame(sub); err != nil {
+						return err
+					}
+					if err := validateSubframes(sub); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
 	return nil
 }
 

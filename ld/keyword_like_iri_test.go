@@ -84,7 +84,10 @@ func TestKeywordLikeIRICompactTermSelection(t *testing.T) {
 func TestKeywordLikeIRIInFrame(t *testing.T) {
 	var in interface{}
 	require.NoError(t, json.Unmarshal([]byte(`{"@id":"http://ex.org/s","@type":"http://ex.org/T"}`), &in))
-	for _, f := range []string{`{"@id":"@x"}`, `{"@id":["@x","http://ex.org/s"]}`, `{"@type":"@x"}`, `{"@type":["@x"]}`} {
+	for _, f := range []string{`{"@id":"@x"}`, `{"@id":["@x","http://ex.org/s"]}`, `{"@type":"@x"}`, `{"@type":["@x"]}`,
+		// Sub-frames follow the same rules, even when no node reaches them.
+		`{"http://ex.org/p":{"@id":"@x"}}`, `{"http://ex.org/p":{"@type":"@x"}}`,
+		`{"@reverse":{"http://ex.org/p":{"@type":"@x"}}}`} {
 		t.Run(f, func(t *testing.T) {
 			var frame interface{}
 			require.NoError(t, json.Unmarshal([]byte(f), &frame))
