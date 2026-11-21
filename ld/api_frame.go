@@ -143,6 +143,7 @@ func createsCircularReference(id string, graph string, state *FramingContext) bo
 
 func (api *JsonLdApi) mergeNodeMapGraphs(graphs map[string]interface{}) map[string]interface{} {
 	merged := make(map[string]interface{})
+	nv := newNodeValues()
 
 	for _, name := range GetOrderedKeys(graphs) {
 		graph := graphs[name].(map[string]interface{})
@@ -163,7 +164,7 @@ func (api *JsonLdApi) mergeNodeMapGraphs(graphs map[string]interface{}) map[stri
 					if property == "@type" {
 						// merge @type arrays across graphs instead of overwriting
 						for _, v := range Arrayify(node[property]) {
-							AddValue(mergedNode, property, CloneDocument(v), true, false, false, false)
+							nv.add(mergedNode, property, CloneDocument(v))
 						}
 					} else {
 						// copy other keywords
@@ -172,7 +173,7 @@ func (api *JsonLdApi) mergeNodeMapGraphs(graphs map[string]interface{}) map[stri
 				} else {
 					// merge objects
 					for _, v := range node[property].([]interface{}) {
-						AddValue(mergedNode, property, CloneDocument(v), true, false, false, false)
+						nv.add(mergedNode, property, CloneDocument(v))
 					}
 				}
 			}

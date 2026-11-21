@@ -23,6 +23,11 @@ import (
 // input into a node map.
 func (api *JsonLdApi) GenerateNodeMap(element interface{}, graphMap map[string]interface{}, activeGraph string,
 	issuer *IdentifierIssuer, activeSubject interface{}, activeProperty string, list map[string]interface{}) (map[string]interface{}, error) {
+	return api.generateNodeMap(newNodeValues(), element, graphMap, activeGraph, issuer, activeSubject, activeProperty, list)
+}
+
+func (api *JsonLdApi) generateNodeMap(nv *nodeValues, element interface{}, graphMap map[string]interface{}, activeGraph string,
+	issuer *IdentifierIssuer, activeSubject interface{}, activeProperty string, list map[string]interface{}) (map[string]interface{}, error) {
 
 	// recurse through array
 	if elementList, isList := element.([]interface{}); isList {
@@ -30,7 +35,7 @@ func (api *JsonLdApi) GenerateNodeMap(element interface{}, graphMap map[string]i
 		// node map, active graph, active subject, active property, and list.
 		for _, item := range elementList {
 			var err error
-			list, err = api.GenerateNodeMap(item, graphMap, activeGraph, issuer, activeSubject, activeProperty, list)
+			list, err = api.generateNodeMap(nv, item, graphMap, activeGraph, issuer, activeSubject, activeProperty, list)
 			if err != nil {
 				return nil, err
 			}
@@ -52,11 +57,11 @@ func (api *JsonLdApi) GenerateNodeMap(element interface{}, graphMap map[string]i
 		graphMap[activeGraph] = graph
 	}
 
-	var subjectNode interface{}
+	var subjectNode map[string]interface{}
 	if activeSubject == nil {
 		subjectNode = graph
-	} else if _, isString := activeSubject.(string); isString {
-		subjectNode = graph[activeSubject.(string)]
+	} else if subject, isString := activeSubject.(string); isString {
+		subjectNode, _ = graph[subject].(map[string]interface{})
 	} else {
 		subjectNode = make(map[string]interface{})
 	}
@@ -84,7 +89,7 @@ func (api *JsonLdApi) GenerateNodeMap(element interface{}, graphMap map[string]i
 			if subjectNode == nil {
 				return nil, NewJsonLdError(InvalidValueObject, "a value object cannot be a node of a graph")
 			}
-			AddValue(subjectNode, activeProperty, element, true, false, false, false)
+			nv.add(subjectNode, activeProperty, element)
 		} else {
 			list["@list"] = append(list["@list"].([]interface{}), element)
 		}
@@ -94,7 +99,7 @@ func (api *JsonLdApi) GenerateNodeMap(element interface{}, graphMap map[string]i
 			"@list": []interface{}{},
 		}
 		var err error
-		result, err = api.GenerateNodeMap(elem["@list"], graphMap, activeGraph, issuer, activeSubject, activeProperty, result)
+		result, err = api.generateNodeMap(nv, elem["@list"], graphMap, activeGraph, issuer, activeSubject, activeProperty, result)
 		if err != nil {
 			return nil, err
 		}
@@ -102,7 +107,7 @@ func (api *JsonLdApi) GenerateNodeMap(element interface{}, graphMap map[string]i
 			if subjectNode == nil {
 				return nil, NewJsonLdError(InvalidSetOrListObject, "a list object cannot be a node of a graph")
 			}
-			AddValue(subjectNode, activeProperty, result, true, false, false, false)
+			nv.add(subjectNode, activeProperty, result)
 		} else {
 			list["@list"] = append(list["@list"].([]interface{}), result)
 		}
@@ -129,20 +134,20 @@ func (api *JsonLdApi) GenerateNodeMap(element interface{}, graphMap map[string]i
 
 	if _, isMap := activeSubject.(map[string]interface{}); isMap {
 		// if subject is a hash, then we're processing a reverse-property relationship.
-		AddValue(node, activeProperty, activeSubject, true, false, false, false)
+		nv.add(node, activeProperty, activeSubject)
 	} else if activeProperty != "" {
 		ref := map[string]interface{}{
 			"@id": id,
 		}
 		if list == nil {
-			AddValue(subjectNode, activeProperty, ref, true, false, false, false)
+			nv.add(subjectNode, activeProperty, ref)
 		} else {
 			list["@list"] = append(list["@list"].([]interface{}), ref)
 		}
 	}
 
 	if typeVal, hasType := elem["@type"]; hasType {
-		AddValue(node, "@type", typeVal, true, false, false, false)
+		nv.add(node, "@type", typeVal)
 	}
 
 	if elemIdx, hasIndex := elem["@index"]; hasIndex {
@@ -160,7 +165,7 @@ func (api *JsonLdApi) GenerateNodeMap(element interface{}, graphMap map[string]i
 		reverseMap := reverseVal.(map[string]interface{})
 		for reverseProperty, values := range reverseMap {
 			for _, v := range values.([]interface{}) {
-				_, err := api.GenerateNodeMap(v, graphMap, activeGraph, issuer, referencedNode, reverseProperty, nil)
+				_, err := api.generateNodeMap(nv, v, graphMap, activeGraph, issuer, referencedNode, reverseProperty, nil)
 				if err != nil {
 					return nil, err
 				}
@@ -169,14 +174,14 @@ func (api *JsonLdApi) GenerateNodeMap(element interface{}, graphMap map[string]i
 	}
 
 	if graphVal, hasGraph := elem["@graph"]; hasGraph {
-		_, err := api.GenerateNodeMap(graphVal, graphMap, id.(string), issuer, "", "", nil)
+		_, err := api.generateNodeMap(nv, graphVal, graphMap, id.(string), issuer, "", "", nil)
 		if err != nil {
 			return nil, err
 		}
 	}
 
 	if includedVal, hasIncluded := elem["@included"]; hasIncluded {
-		_, err := api.GenerateNodeMap(includedVal, graphMap, activeGraph, issuer, "", "", nil)
+		_, err := api.generateNodeMap(nv, includedVal, graphMap, activeGraph, issuer, "", "", nil)
 		if err != nil {
 			return nil, err
 		}
@@ -199,7 +204,7 @@ func (api *JsonLdApi) GenerateNodeMap(element interface{}, graphMap map[string]i
 		if _, found := node[property]; !found {
 			node[property] = []interface{}{}
 		}
-		if _, err := api.GenerateNodeMap(value, graphMap, activeGraph, issuer, id.(string), property, nil); err != nil {
+		if _, err := api.generateNodeMap(nv, value, graphMap, activeGraph, issuer, id.(string), property, nil); err != nil {
 			return nil, err
 		}
 	}
