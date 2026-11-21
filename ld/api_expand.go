@@ -908,6 +908,16 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 
 	// expand each nested key
 	for _, n := range nests {
+		// §5.1.2 step 14.2.2 repeats steps 3 and 8 with the nesting key as
+		// active property, so its property-scoped context applies inside.
+		nestCtx := activeCtx
+		if td := activeCtx.GetTermDefinition(n); td != nil && td.HasContext {
+			var err error
+			nestCtx, err = activeCtx.parse(td.Context, td.BaseURL, nil, false, true, false, true)
+			if err != nil {
+				return err
+			}
+		}
 		nestPointer := jsonPointerChild(opts, pointer, n)
 		// Arrayify wraps a lone value, so the index only belongs in the pointer
 		// when the source really was an array.
@@ -921,7 +931,10 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 			hasValues := false
 			if isMap {
 				for k := range nvMap {
-					expanded, _ := activeCtx.ExpandIri(k, false, true, nil, nil)
+					expanded, err := nestCtx.ExpandIri(k, false, true, nil, nil)
+					if err != nil {
+						return err
+					}
 					if expanded == "@value" {
 						hasValues = true
 						break
@@ -931,7 +944,7 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 			if !isMap || hasValues {
 				return NewJsonLdError(InvalidNestValue, "nested value must be a node object")
 			}
-			err := api.expandObject(activeCtx, activeProperty, expandedActiveProperty, nv.(map[string]interface{}), resultMap, typeKey, opts, typeScopedContext, frameExpansion, nvPointer)
+			err := api.expandObject(nestCtx, activeProperty, expandedActiveProperty, nv.(map[string]interface{}), resultMap, typeKey, opts, typeScopedContext, frameExpansion, nvPointer)
 			if err != nil {
 				return err
 			}

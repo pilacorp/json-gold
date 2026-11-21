@@ -17,8 +17,6 @@ var skippedTests = map[string][]string{
 		"#t0123", // TODO
 		"#tc032", // TODO
 		"#tc033", // TODO
-		"#tc037", // TODO: New test
-		"#tc038", // TODO: New test
 		"#tec02", // TODO
 		"#ter52", // TODO
 		"#ter54", // TODO: New test
@@ -45,8 +43,6 @@ var skippedTests = map[string][]string{
 		"#te075", // No support for produceGeneralizedRdf
 		"#tc032", // TODO
 		"#tc033", // TODO
-		"#tc037", // TODO: New test
-		"#tc038", // TODO: New test
 		"#te123", // TODO: new test
 		"#tec02", // TODO: new test
 		"#ter52", // TODO: new test
