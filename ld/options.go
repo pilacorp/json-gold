@@ -72,9 +72,13 @@ type JsonLdOptions struct { //nolint:stylecheck
 	// step 5.2.3: how many remote contexts one @context value may process,
 	// repeats and nested contexts included. The document's top-level
 	// context, each embedded node context, each scoped context applied and
-	// ExpandContext count separately. Each URL is loaded once per @context
-	// value, so a loader budget sees one load for up to this many
-	// processings of it. Zero or negative means DefaultMaxRemoteContexts.
+	// ExpandContext count separately. Expanding one document through
+	// JsonLdProcessor loads each context URL once, @import and scoped
+	// contexts included, however often it is processed; compacting or
+	// framing loads the contexts of its own context argument once more.
+	// With a Context the caller builds and passes to JsonLdApi, each
+	// @context value loads its URLs once and nothing is kept between calls.
+	// Zero or negative means DefaultMaxRemoteContexts.
 	MaxRemoteContexts int
 
 	// ExpandedElementHandler, when set, is called during expansion for each

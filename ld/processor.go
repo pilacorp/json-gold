@@ -63,7 +63,7 @@ func (jldp *JsonLdProcessor) Compact(input interface{}, context interface{},
 	}
 	contextBase := in.baseURL(opts)
 	opts.Base = in.baseIRI(opts)
-	activeCtx := NewContext(nil, opts)
+	activeCtx := newCallContext(opts)
 	activeCtx, err = activeCtx.parse(context, contextBase, nil, false, true, false, false)
 	if err != nil {
 		return nil, err
@@ -180,6 +180,14 @@ func (in *apiInput) baseIRI(opts *JsonLdOptions) string {
 	return in.documentURL
 }
 
+// newCallContext returns an empty active context for one processor call.
+// The contexts derived from it share one set of loaded context documents.
+func newCallContext(opts *JsonLdOptions) *Context {
+	ctx := NewContext(nil, opts)
+	ctx.documents = make(map[string]*RemoteDocument)
+	return ctx
+}
+
 func (jldp *JsonLdProcessor) expandInput(in *apiInput, opts *JsonLdOptions) ([]interface{}, error) {
 	// The Expansion algorithm reads opts.Base as its base URL, and a null
 	// context resets the base IRI to it (§4.1.2 step 5.1.2). Both are the
@@ -193,7 +201,7 @@ func (jldp *JsonLdProcessor) expandInput(in *apiInput, opts *JsonLdOptions) ([]i
 	}
 
 	// 3)
-	activeCtx := NewContext(nil, expandOpts)
+	activeCtx := newCallContext(expandOpts)
 	activeCtx.Values.Base = in.baseIRI(opts)
 
 	// 4)
@@ -337,7 +345,7 @@ func (jldp *JsonLdProcessor) Flatten(input interface{}, context interface{}, opt
 		// §9.2 flatten() step 6 compacts the flattened output, not a remote
 		// document, so compact() step 5 takes the base option as context
 		// base. Without one, opts.Base holds the input's documentUrl.
-		activeCtx := NewContext(nil, opts)
+		activeCtx := newCallContext(opts)
 		activeCtx, err = activeCtx.Parse(context)
 		if err != nil {
 			return nil, err
@@ -425,7 +433,7 @@ func (jldp *JsonLdProcessor) Frame(input interface{}, frame interface{}, opts *J
 	}
 
 	frameMap := frame.(map[string]interface{})
-	activeCtx := NewContext(nil, opts)
+	activeCtx := newCallContext(opts)
 	activeCtx, err = activeCtx.Parse(frameMap["@context"])
 	if err != nil {
 		return nil, err

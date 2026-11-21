@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -364,5 +365,205 @@ func TestRemoteContextRepeatsCountTowardLimit(t *testing.T) {
 	_, err = NewJsonLdProcessor().Expand(newDoc(3), opts)
 	if !errors.As(err, &ldErr) || ldErr.Code != ContextOverflow {
 		t.Fatalf("MaxRemoteContexts lowered: got %v, want %q", err, ContextOverflow)
+	}
+}
+
+// scopedImportDoc uses a term whose scoped context imports a remote context,
+// n times.
+func scopedImportDoc(n int) map[string]interface{} {
+	items := make([]interface{}, n)
+	for i := range items {
+		items[i] = map[string]interface{}{"name": fmt.Sprintf("n%d", i)}
+	}
+	return map[string]interface{}{
+		"@context": map[string]interface{}{
+			"@version": 1.1,
+			"item": map[string]interface{}{
+				"@id":      "https://example.org/item",
+				"@context": map[string]interface{}{"@import": "https://example.org/imp.jsonld"},
+			},
+		},
+		"item": items,
+	}
+}
+
+func importLoader() *urlDocumentLoader {
+	return &urlDocumentLoader{docs: map[string]interface{}{
+		"https://example.org/imp.jsonld": map[string]interface{}{
+			"@context": map[string]interface{}{"name": "https://example.org/name"},
+		},
+	}}
+}
+
+// The loader may hand out the same object on every call, as a caching loader
+// does. Merging @import must not write into it (JSON-LD 1.1 API §4.1.2 step
+// 5.6.7 merges into a new map), or the second use finds an @import entry in
+// the imported context and fails.
+func TestImportLeavesLoadedDocumentUnchanged(t *testing.T) {
+	loader := importLoader()
+	for i := 0; i < 2; i++ {
+		opts := NewJsonLdOptions("")
+		opts.DocumentLoader = loader
+		out, err := NewJsonLdProcessor().Expand(scopedImportDoc(1), opts)
+		if err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+		if !strings.Contains(fmt.Sprint(out), "https://example.org/name") {
+			t.Fatalf("run %d: imported term not applied: %v", i, out)
+		}
+	}
+	imported := loader.docs["https://example.org/imp.jsonld"].(map[string]interface{})["@context"].(map[string]interface{})
+	if len(imported) != 1 {
+		t.Fatalf("loaded document changed: %v", imported)
+	}
+}
+
+// A context URL dereferenced once in an operation is not dereferenced again
+// (JSON-LD 1.1 API §4.1.2 step 5.2.4), however many times a scoped context
+// that names it is applied.
+func TestScopedImportDereferencedOnce(t *testing.T) {
+	loader := importLoader()
+	opts := NewJsonLdOptions("")
+	opts.DocumentLoader = loader
+	if _, err := NewJsonLdProcessor().Expand(scopedImportDoc(50), opts); err != nil {
+		t.Fatal(err)
+	}
+	if len(loader.got) != 1 {
+		t.Fatalf("loaded %d times, want once", len(loader.got))
+	}
+}
+
+func TestScopedRemoteContextDereferencedOnce(t *testing.T) {
+	loader := importLoader()
+	opts := NewJsonLdOptions("")
+	opts.DocumentLoader = loader
+	doc := scopedImportDoc(50)
+	doc["@context"].(map[string]interface{})["item"].(map[string]interface{})["@context"] = "https://example.org/imp.jsonld"
+	if _, err := NewJsonLdProcessor().Expand(doc, opts); err != nil {
+		t.Fatal(err)
+	}
+	if len(loader.got) != 1 {
+		t.Fatalf("loaded %d times, want once", len(loader.got))
+	}
+}
+
+type sharedDocLoader struct{ rd *RemoteDocument }
+
+func (l sharedDocLoader) LoadDocument(string) (*RemoteDocument, error) { return l.rd, nil }
+
+// Calls running at once may share one loaded document, as they do behind a
+// caching loader; context processing only reads it. Run with -race.
+func TestConcurrentCallsShareLoadedDocument(t *testing.T) {
+	loader := sharedDocLoader{rd: &RemoteDocument{
+		DocumentURL: "https://example.org/imp.jsonld",
+		Document:    importLoader().docs["https://example.org/imp.jsonld"],
+	}}
+	errs := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		go func() {
+			opts := NewJsonLdOptions("")
+			opts.DocumentLoader = loader
+			_, err := NewJsonLdProcessor().Expand(scopedImportDoc(5), opts)
+			errs <- err
+		}()
+	}
+	for i := 0; i < 8; i++ {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Two protected definitions of a term whose scoped context is the same
+// relative IRI differ when the IRI resolves to different contexts, so the
+// second is a protected term redefinition (JSON-LD 1.1 API §4.2.2: a term
+// definition carries its base URL). The same inline context, or relative
+// IRIs that land on one URL, are the same definition.
+func TestProtectedRedefinitionComparesResolvedScopedContext(t *testing.T) {
+	ctx := func(scoped string) map[string]interface{} {
+		return map[string]interface{}{"@context": map[string]interface{}{
+			"@version": 1.1, "@protected": true,
+			"t": map[string]interface{}{"@id": "https://example.org/t", "@context": scoped},
+		}}
+	}
+	inline := func() map[string]interface{} {
+		return map[string]interface{}{"@context": map[string]interface{}{
+			"@version": 1.1, "@protected": true,
+			"t": map[string]interface{}{"@id": "https://example.org/t",
+				"@context": map[string]interface{}{"v": "https://example.org/v"}},
+		}}
+	}
+	cases := []struct {
+		name    string
+		c1, c2  string
+		docs    map[string]interface{}
+		wantErr bool
+	}{
+		{"relative to two targets", "https://example.org/x/c1", "https://example.org/y/c2", map[string]interface{}{
+			"https://example.org/x/c1": ctx("s"), "https://example.org/y/c2": ctx("s"),
+		}, true},
+		{"relative to one target", "https://example.org/x/c1", "https://example.org/x/c2", map[string]interface{}{
+			"https://example.org/x/c1": ctx("s"), "https://example.org/x/c2": ctx("s"),
+		}, false},
+		{"same inline", "https://example.org/x/c1", "https://example.org/y/c2", map[string]interface{}{
+			"https://example.org/x/c1": inline(), "https://example.org/y/c2": inline(),
+		}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			opts := NewJsonLdOptions("")
+			opts.DocumentLoader = &urlDocumentLoader{docs: c.docs}
+			_, err := NewJsonLdProcessor().Expand(map[string]interface{}{
+				"@context": []interface{}{c.c1, c.c2},
+				"@id":      "urn:s",
+			}, opts)
+			var ldErr *JsonLdError
+			gotErr := errors.As(err, &ldErr) && ldErr.Code == ProtectedTermRedefinition
+			if gotErr != c.wantErr || (err != nil && !gotErr) {
+				t.Fatalf("got %v, want protected term redefinition: %v", err, c.wantErr)
+			}
+		})
+	}
+}
+
+type countingLoader struct {
+	mu    sync.Mutex
+	loads int
+}
+
+func (l *countingLoader) LoadDocument(u string) (*RemoteDocument, error) {
+	l.mu.Lock()
+	l.loads++
+	l.mu.Unlock()
+	return &RemoteDocument{DocumentURL: u, Document: map[string]interface{}{
+		"@context": map[string]interface{}{"name": "https://example.org/name"},
+	}}, nil
+}
+
+// A Context built by the caller and passed to JsonLdApi keeps no state
+// between calls: goroutines may share it, and each call loads the contexts
+// it needs. Run with -race.
+func TestCallerContextKeepsNoDocuments(t *testing.T) {
+	loader := &countingLoader{}
+	opts := NewJsonLdOptions("")
+	opts.DocumentLoader = loader
+	ctx, err := NewContext(nil, opts).Parse(map[string]interface{}{"@vocab": "https://example.org/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := map[string]interface{}{"@context": "https://example.org/c.jsonld", "name": "x"}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := NewJsonLdApi().Expand(ctx, "", CloneDocument(doc), opts, false, nil); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if loader.loads != 8 {
+		t.Fatalf("loaded %d times for 8 calls, want 8", loader.loads)
 	}
 }

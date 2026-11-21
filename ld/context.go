@@ -55,6 +55,13 @@ type Context struct {
 	// termBaseURL is the base URL of the local context whose terms are
 	// being defined; createTermDefinition stores it in each definition.
 	termBaseURL string
+
+	// documents holds the context documents one JsonLdProcessor call has
+	// dereferenced, by URL. Contexts derived from one another share it, so
+	// the call loads each URL once (JSON-LD 1.1 API §4.1.2 step 5.2.4),
+	// scoped contexts and @import included. It is nil on a Context the
+	// caller builds, which keeps no documents between calls.
+	documents map[string]*RemoteDocument
 }
 
 type Values struct {
@@ -126,7 +133,29 @@ func DeepCompareTermDef(lhs *TermDefinition, rhs *TermDefinition, listOrderMatte
 		reflect.DeepEqual(lhs.Container, rhs.Container) &&
 		reflect.DeepEqual(lhs.Direction, rhs.Direction) && lhs.HasDirection == rhs.HasDirection &&
 		reflect.DeepEqual(lhs.Language, rhs.Language) && lhs.HasLanguage == rhs.HasLanguage &&
-		DeepCompare(lhs.Context, rhs.Context, listOrderMatters)
+		DeepCompare(lhs.resolvedContext(), rhs.resolvedContext(), listOrderMatters)
+}
+
+// resolvedContext returns the scoped context with each context IRI resolved
+// against the definition's base URL. A definition carries its base URL
+// (JSON-LD 1.1 API §4.1), so one relative IRI read from two contexts may
+// name two different scoped contexts.
+func (td *TermDefinition) resolvedContext() interface{} {
+	switch ctx := td.Context.(type) {
+	case string:
+		return Resolve(td.BaseURL, ctx)
+	case []interface{}:
+		resolved := make([]interface{}, len(ctx))
+		for i, c := range ctx {
+			if s, isString := c.(string); isString {
+				resolved[i] = Resolve(td.BaseURL, s)
+			} else {
+				resolved[i] = c
+			}
+		}
+		return resolved
+	}
+	return td.Context
 }
 
 type FastCurieEntry struct {
@@ -183,6 +212,7 @@ func (c *Context) AsMap() map[string]interface{} {
 // CopyContext creates a full copy of the given context.
 func CopyContext(ctx *Context) *Context {
 	context := NewContext(nil, ctx.options)
+	context.documents = ctx.documents
 	if ctx.Values != nil {
 		values := *ctx.Values
 		context.Values = &values
@@ -221,12 +251,33 @@ func (c *Context) Parse(localContext interface{}) (*Context, error) {
 // ends early.
 const DefaultMaxRemoteContexts = 32
 
-// remoteContexts tracks the remote contexts of one context processing:
-// each URL is dereferenced once (step 5.2.4) and every processed remote
-// context counts toward the limit.
+// remoteContexts tracks the remote contexts of one @context value: how many
+// were processed, toward the limit of step 5.2.3, and the documents loaded
+// for it when no processor call holds them.
 type remoteContexts struct {
 	loaded    map[string]*RemoteDocument
 	processed int
+}
+
+// loadContextDocument dereferences a context URL, or returns the document
+// already loaded for it (JSON-LD 1.1 API §4.1.2 step 5.2.4): in this
+// processor call, or else for this @context value. The document may be
+// shared, so callers must not modify it.
+func (c *Context) loadContextDocument(uri string, remote *remoteContexts) (*RemoteDocument, error) {
+	cache := c.documents
+	if cache == nil {
+		cache = remote.loaded
+	}
+	if rd, loaded := cache[uri]; loaded {
+		return rd, nil
+	}
+	rd, err := c.options.DocumentLoader.LoadDocument(uri)
+	if err != nil {
+		return nil, NewJsonLdError(LoadingRemoteContextFailed,
+			fmt.Errorf("dereferencing a URL did not result in a valid JSON-LD context (%s): %w", uri, err))
+	}
+	cache[uri] = rd
+	return rd, nil
 }
 
 // parse processes a local context, retrieving any URLs as necessary, and
@@ -279,6 +330,7 @@ func (c *Context) parse(localContext interface{}, baseURL string, remote *remote
 					"tried to nullify a context with protected terms outside of a term definition.")
 			}
 			nullCtx := NewContext(nil, c.options)
+			nullCtx.documents = c.documents
 			if !propagate {
 				nullCtx.previousContext = result
 			}
@@ -308,16 +360,9 @@ func (c *Context) parse(localContext interface{}, baseURL string, remote *remote
 			}
 			remote.processed++
 
-			// Dereference context, once per URL (step 5.2.4)
-			rd, loaded := remote.loaded[uri]
-			if !loaded {
-				var err error
-				rd, err = c.options.DocumentLoader.LoadDocument(uri)
-				if err != nil {
-					return nil, NewJsonLdError(LoadingRemoteContextFailed,
-						fmt.Errorf("dereferencing a URL did not result in a valid JSON-LD context (%s): %w", uri, err))
-				}
-				remote.loaded[uri] = rd
+			rd, err := c.loadContextDocument(uri, remote)
+			if err != nil {
+				return nil, err
 			}
 			remoteContextMap, isMap := rd.Document.(map[string]interface{})
 			context, hasContextKey := remoteContextMap["@context"]
@@ -387,10 +432,9 @@ func (c *Context) parse(localContext interface{}, baseURL string, remote *remote
 			}
 			uri := Resolve(baseURL, importStr)
 
-			rd, err := c.options.DocumentLoader.LoadDocument(uri)
+			rd, err := c.loadContextDocument(uri, remote)
 			if err != nil {
-				return nil, NewJsonLdError(LoadingRemoteContextFailed,
-					fmt.Errorf("dereferencing a URL did not result in a valid JSON-LD context (%s): %w", uri, err))
+				return nil, err
 			}
 			importCtxDocMap, isMap := rd.Document.(map[string]interface{})
 			context, hasContextKey := importCtxDocMap["@context"]
@@ -406,11 +450,16 @@ func (c *Context) parse(localContext interface{}, baseURL string, remote *remote
 						fmt.Sprintf("%s must not include @import entry", importStr))
 				}
 
-				// merge import context into the outer context
-				for k, v := range contextMap {
-					importCtxMap[k] = v
+				// Step 5.6.7: merge into a new map, entries of the outer
+				// context winning. The imported map belongs to the loader.
+				merged := make(map[string]interface{}, len(importCtxMap)+len(contextMap))
+				for k, v := range importCtxMap {
+					merged[k] = v
 				}
-				contextMap = importCtxMap
+				for k, v := range contextMap {
+					merged[k] = v
+				}
+				contextMap = merged
 			} else {
 				return nil, NewJsonLdError(InvalidRemoteContext, fmt.Sprintf("%s must be an object", importStr))
 			}

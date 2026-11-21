@@ -84,13 +84,15 @@ func TestScopedContextResolvesAgainstDefiningContext(t *testing.T) {
 
 // JSON-LD 1.1 API §4.2.2: an identical redefinition of a protected term
 // keeps the previous definition, including the base URL of its scoped
-// context.
+// context. The inline scoped context is the same in both contexts, but its
+// relative @import only resolves next to the first one.
 func TestProtectedRedefinitionKeepsScopedContextBase(t *testing.T) {
 	def := func() map[string]interface{} {
 		return map[string]interface{}{"@context": map[string]interface{}{
 			"@version":   1.1,
 			"@protected": true,
-			"p":          map[string]interface{}{"@id": "https://ex.org/p", "@context": "s.jsonld"},
+			"p": map[string]interface{}{"@id": "https://ex.org/p",
+				"@context": map[string]interface{}{"@import": "s.jsonld"}},
 		}}
 	}
 	loader := &urlDocumentLoader{docs: map[string]interface{}{
