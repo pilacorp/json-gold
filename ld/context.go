@@ -1157,7 +1157,9 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 					return err
 				}
 			}
-			if termDef, hasTermDef := c.termDefinition(prefix); hasTermDef {
+			// A prefix set to null has no IRI mapping to concatenate, so
+			// the term is an IRI, as IRI expansion would read it.
+			if termDef, _ := c.termDefinition(prefix); termDef != nil {
 				suffix := term[colIndex+1:]
 				definition.ID = termDef.ID + suffix
 			} else {
@@ -1599,8 +1601,8 @@ func (c *Context) ExpandIri(value string, relative bool, vocab bool, context map
 		// 4.4)
 		// If active context contains a term definition for prefix, return the result of concatenating
 		// the IRI mapping associated with prefix and suffix.
-		termDef, hasPrefix := c.termDefinition(prefix)
-		if hasPrefix && termDef.ID != "" && termDef.Prefix != nil && *termDef.Prefix {
+		termDef, _ := c.termDefinition(prefix)
+		if termDef != nil && termDef.ID != "" && termDef.Prefix != nil && *termDef.Prefix {
 			return termDef.ID + suffix, nil
 		} else if IsAbsoluteIri(value) {
 			// Otherwise, if the value has the form of an absolute IRI, return it
@@ -1880,9 +1882,9 @@ func (c *Context) CompactIri(iri string, value interface{}, relativeToVocab bool
 						return "", err
 					}
 				}
-				resultVal, hasResult := c.termDefinition(result)
+				resultVal, _ := c.termDefinition(result)
 				check := false
-				if isString && hasResult {
+				if isString && resultVal != nil {
 					resultIDVal, hasResultID := resultVal.ID, resultVal.ID != ""
 					check = hasResultID && idVal == resultIDVal
 				}
@@ -1971,7 +1973,7 @@ func (c *Context) CompactIri(iri string, value interface{}, relativeToVocab bool
 			prefix := termDefinitionAny.Prefix
 			curieMapping, hasCurie := c.termDefinition(curie)
 
-			isUsableCurie := prefix != nil && *prefix && (!hasCurie || value == nil && curieMapping.ID == iri)
+			isUsableCurie := prefix != nil && *prefix && (!hasCurie || value == nil && curieMapping != nil && curieMapping.ID == iri)
 
 			// select curie if it is shorter or the same length but lexicographically
 			// less than the current choice
@@ -2506,8 +2508,11 @@ func (c *Context) Serialize() (map[string]interface{}, error) {
 		ctx["@vocab"] = *vocabVal
 	}
 	for term, definition := range c.TermDefinitions {
-		// Note: definitionVal may be nil for terms which are set to be ignored
-		// (see the definition for null value in JSON-LD spec)
+		// A term set to null has no definition.
+		if definition == nil {
+			ctx[term] = nil
+			continue
+		}
 		langVal, hasLang := definition.Language, definition.HasLanguage
 		containerVal, hasContainer := definition.Container, definition.Container != nil
 		typeMapping := definition.Type
