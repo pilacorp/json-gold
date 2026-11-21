@@ -10,6 +10,7 @@ import (
 type urlDocumentLoader struct {
 	docs      map[string]interface{}
 	redirects map[string]string // requested URL -> final URL after redirects
+	noDocURL  bool              // leave RemoteDocument.DocumentURL empty
 	got       []string
 }
 
@@ -21,6 +22,9 @@ func (l *urlDocumentLoader) LoadDocument(u string) (*RemoteDocument, error) {
 	doc, ok := l.docs[u]
 	if !ok {
 		return nil, NewJsonLdError(LoadingDocumentFailed, u)
+	}
+	if l.noDocURL {
+		u = ""
 	}
 	return &RemoteDocument{DocumentURL: u, Document: doc}, nil
 }
@@ -282,6 +286,33 @@ func TestEmbeddedContextIgnoresOuterBase(t *testing.T) {
 		t.Fatalf("loaded %v: %v", loader.got, err)
 	}
 	if want := "<urn:s:2> <https://example.org/y> \"2\" .\n"; !strings.Contains(out.(string), want) {
+		t.Fatalf("got %q, want %q", out, want)
+	}
+}
+
+// A loader that leaves DocumentURL empty still gets @import resolved
+// next to the requested context URL.
+func TestRemoteContextImportWithoutDocumentURL(t *testing.T) {
+	loader := &urlDocumentLoader{noDocURL: true, docs: map[string]interface{}{
+		"https://example.org/ctx/a.jsonld": map[string]interface{}{
+			"@context": map[string]interface{}{"@version": 1.1, "@import": "b.jsonld"},
+		},
+		"https://example.org/ctx/b.jsonld": map[string]interface{}{
+			"@context": map[string]interface{}{"y": "https://example.org/y"},
+		},
+	}}
+	opts := NewJsonLdOptions("https://example.org/doc.jsonld")
+	opts.DocumentLoader = loader
+	opts.Format = "application/n-quads"
+	out, err := NewJsonLdProcessor().ToRDF(map[string]interface{}{
+		"@context": "https://example.org/ctx/a.jsonld",
+		"@id":      "urn:s:1",
+		"y":        "2",
+	}, opts)
+	if err != nil {
+		t.Fatalf("loaded %v: %v", loader.got, err)
+	}
+	if want := "<urn:s:1> <https://example.org/y> \"2\" .\n"; out.(string) != want {
 		t.Fatalf("got %q, want %q", out, want)
 	}
 }
