@@ -486,6 +486,9 @@ func TestProtectedRedefinitionComparesResolvedScopedContext(t *testing.T) {
 			"t": map[string]interface{}{"@id": "https://example.org/t", "@context": scoped},
 		}}
 	}
+	// JSON-LD 1.1 API §4.2.2 step 21 loads a scoped context when the term
+	// is defined, so each one the contexts name must exist.
+	scopedDoc := map[string]interface{}{"@context": map[string]interface{}{"v": "https://example.org/v"}}
 	inline := func() map[string]interface{} {
 		return map[string]interface{}{"@context": map[string]interface{}{
 			"@version": 1.1, "@protected": true,
@@ -501,9 +504,11 @@ func TestProtectedRedefinitionComparesResolvedScopedContext(t *testing.T) {
 	}{
 		{"relative to two targets", "https://example.org/x/c1", "https://example.org/y/c2", map[string]interface{}{
 			"https://example.org/x/c1": ctx("s"), "https://example.org/y/c2": ctx("s"),
+			"https://example.org/x/s": scopedDoc, "https://example.org/y/s": scopedDoc,
 		}, true},
 		{"relative to one target", "https://example.org/x/c1", "https://example.org/x/c2", map[string]interface{}{
 			"https://example.org/x/c1": ctx("s"), "https://example.org/x/c2": ctx("s"),
+			"https://example.org/x/s": scopedDoc,
 		}, false},
 		{"same inline", "https://example.org/x/c1", "https://example.org/y/c2", map[string]interface{}{
 			"https://example.org/x/c1": inline(), "https://example.org/y/c2": inline(),

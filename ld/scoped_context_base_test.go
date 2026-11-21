@@ -2,9 +2,11 @@ package ld
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // JSON-LD 1.1 API §5.1.2 and §6.1.2 process a scoped context with the
@@ -99,6 +101,8 @@ func TestProtectedRedefinitionKeepsScopedContextBase(t *testing.T) {
 		"https://ctx.org/a/c.jsonld": def(),
 		"https://ctx.org/b/c.jsonld": def(),
 		"https://ctx.org/a/s.jsonld": map[string]interface{}{"@context": map[string]interface{}{"q": "https://ex.org/q"}},
+		// Loaded only to validate the second definition (§4.2.2 step 21).
+		"https://ctx.org/b/s.jsonld": map[string]interface{}{"@context": map[string]interface{}{"q": "https://ex.org/other"}},
 	}}
 	opts := NewJsonLdOptions("https://doc.org/d/doc.jsonld")
 	opts.DocumentLoader = loader
@@ -155,5 +159,78 @@ func TestProtectedRedefinitionUnsetPrefixIsFalse(t *testing.T) {
 	}, NewJsonLdOptions(""))
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// §4.2.2 step 21 validates a scoped context on a copy of remote contexts, so
+// the scoped contexts of unused terms do not count toward the limit of
+// §4.1.2 step 5.2.3 for the context that defines them.
+func TestScopedContextValidationDoesNotCountTowardLimit(t *testing.T) {
+	docs := map[string]interface{}{}
+	terms := map[string]interface{}{"q": "https://ex.org/q"}
+	for i := 0; i < DefaultMaxRemoteContexts+8; i++ {
+		u := "https://ctx.org/s" + strings.Repeat("x", i)
+		docs[u] = map[string]interface{}{"@context": map[string]interface{}{"r": "https://ex.org/r"}}
+		terms["t"+strings.Repeat("x", i)] = map[string]interface{}{"@id": "https://ex.org/t", "@context": u}
+	}
+	doc := map[string]interface{}{"@context": terms, "@id": "urn:s", "q": "v"}
+	opts := NewJsonLdOptions("")
+	opts.DocumentLoader = &urlDocumentLoader{docs: docs}
+	opts.Format = "application/n-quads"
+	got, err := NewJsonLdProcessor().ToRDF(doc, opts)
+	if err != nil {
+		t.Fatalf("ToRDF: %v", err)
+	}
+	if want := "<urn:s> <https://ex.org/q> \"v\" .\n"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// Each scoped context is validated once per call, whether it is named by
+// URL or written inline. Every level defines ten terms that share the next
+// level's context, so validating each use separately would parse 10^8
+// contexts and not finish.
+func TestScopedContextValidatedOncePerCall(t *testing.T) {
+	const width, depth = 10, 8
+	level := func(next interface{}) map[string]interface{} {
+		terms := map[string]interface{}{}
+		for i := 0; i < width; i++ {
+			def := map[string]interface{}{"@id": fmt.Sprintf("https://ex.org/t%d", i)}
+			if next != nil {
+				def["@context"] = next
+			}
+			terms[fmt.Sprintf("t%d", i)] = def
+		}
+		return terms
+	}
+
+	docs := map[string]interface{}{}
+	var byURL, inline interface{}
+	for l := 0; l < depth; l++ {
+		u := fmt.Sprintf("https://ctx.org/%d", l)
+		docs[u] = map[string]interface{}{"@context": level(byURL)}
+		byURL = u
+		inline = level(inline)
+	}
+
+	for name, ctx := range map[string]interface{}{"url": byURL, "inline": inline} {
+		t.Run(name, func(t *testing.T) {
+			doc := map[string]interface{}{"@context": ctx, "@id": "urn:s", "t0": "v"}
+			opts := NewJsonLdOptions("")
+			opts.DocumentLoader = &urlDocumentLoader{docs: docs}
+			done := make(chan error, 1)
+			go func() {
+				_, err := NewJsonLdProcessor().Expand(doc, opts)
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("Expand: %v", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("scoped context validation did not finish in 10s")
+			}
+		})
 	}
 }

@@ -70,6 +70,7 @@ const (
 	InvalidPrefixValue          ErrorCode = "invalid @prefix value"
 	InvalidNestValue            ErrorCode = "invalid @nest value"
 	InvalidContextNullification ErrorCode = "invalid context nullification"
+	InvalidScopedContext        ErrorCode = "invalid scoped context"
 	ProtectedTermRedefinition   ErrorCode = "protected term redefinition"
 	InvalidProtectedValue       ErrorCode = "invalid @protected value"
 	InvalidContextEntry         ErrorCode = "invalid context entry"

@@ -63,6 +63,10 @@ type Context struct {
 	// caller builds, which keeps no documents between calls.
 	documents map[string]*RemoteDocument
 
+	// validated holds the scoped contexts validateScopedContext has checked
+	// in this processor call. It is shared and nil like documents.
+	validated map[scopedContextKey]bool
+
 	// protectedNull holds the protected terms whose IRI mapping is null.
 	// TermDefinitions keeps such a term as nil, which cannot carry the flag.
 	protectedNull map[string]bool
@@ -217,6 +221,7 @@ func (c *Context) AsMap() map[string]interface{} {
 func CopyContext(ctx *Context) *Context {
 	context := NewContext(nil, ctx.options)
 	context.documents = ctx.documents
+	context.validated = ctx.validated
 	if ctx.Values != nil {
 		values := *ctx.Values
 		context.Values = &values
@@ -268,6 +273,65 @@ const DefaultMaxRemoteContexts = 32
 type remoteContexts struct {
 	loaded    map[string]*RemoteDocument
 	processed int
+
+	// validated stands in for Context.validated on a Context the caller
+	// builds, so a scoped context that names itself is validated once.
+	validated map[scopedContextKey]bool
+}
+
+// scopedContextKey names one scoped context value for validateScopedContext:
+// a resolved URL, or the identity of an inline map or array, with its base.
+// An array also needs its length, as two arrays can share a backing store.
+type scopedContextKey struct {
+	url  string
+	ptr  uintptr
+	len  int
+	base string
+}
+
+// validateScopedContext is JSON-LD 1.1 API §4.2.2 step 21: the scoped context
+// of a term definition is processed when the term is defined, so an error in
+// it is reported even if the term is never used. The result is discarded; the
+// scoped context is processed again where it applies.
+//
+// As step 21 says, the validation works on a copy of remote contexts, so the
+// contexts it loads do not count toward the caller's limit. Each scoped
+// context value is validated once per processor call: applying a scoped
+// context defines its terms again, and validating their scoped contexts
+// every time would repeat the whole nested tree for each value of the term.
+func (c *Context) validateScopedContext(termValue interface{}, baseURL string, remote *remoteContexts) error {
+	termMap, isMap := termValue.(map[string]interface{})
+	scoped, hasScoped := termMap["@context"]
+	if !isMap || !hasScoped {
+		return nil
+	}
+	key := scopedContextKey{base: baseURL}
+	switch v := scoped.(type) {
+	case string:
+		key.url = Resolve(baseURL, v)
+	case map[string]interface{}:
+		key.ptr = reflect.ValueOf(v).Pointer()
+	case []interface{}:
+		key.ptr, key.len = reflect.ValueOf(v).Pointer(), len(v)
+	}
+	validated := c.validated
+	if validated == nil {
+		if remote.validated == nil {
+			remote.validated = make(map[scopedContextKey]bool)
+		}
+		validated = remote.validated
+	}
+	if key.url != "" || key.ptr != 0 {
+		if validated[key] {
+			return nil
+		}
+		validated[key] = true
+	}
+	copied := &remoteContexts{loaded: remote.loaded, processed: remote.processed, validated: remote.validated}
+	if _, err := c.parse(scoped, baseURL, copied, false, true, false, true); err != nil {
+		return NewJsonLdError(InvalidScopedContext, err)
+	}
+	return nil
 }
 
 // loadContextDocument dereferences a context URL, or returns the document
@@ -342,6 +406,7 @@ func (c *Context) parse(localContext interface{}, baseURL string, remote *remote
 			}
 			nullCtx := NewContext(nil, c.options)
 			nullCtx.documents = c.documents
+			nullCtx.validated = c.validated
 			if !propagate {
 				nullCtx.previousContext = result
 			}
@@ -578,6 +643,19 @@ func (c *Context) parse(localContext interface{}, baseURL string, remote *remote
 				if err := result.createTermDefinition(contextMap, key, defined, overrideProtected); err != nil {
 					return nil, err
 				}
+			}
+		}
+		// §4.2.2 step 21 validates a scoped context against the active
+		// context at the time the term is defined, which depends on the
+		// order of the entries. Go maps have no order, so the scoped
+		// contexts are validated once all terms of this context exist; the
+		// result is then the same on every run.
+		for key := range contextMap {
+			if _, skip := nonTermDefKeys[key]; skip || !definesTerm(key, contextMap[key]) {
+				continue
+			}
+			if err := result.validateScopedContext(contextMap[key], baseURL, remote); err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -1281,6 +1359,23 @@ func (c *Context) defineNullTerm(term string, mapValue map[string]interface{}, p
 	}
 	defined[term] = true
 	return nil
+}
+
+// definesTerm reports whether createTermDefinition defines term from value,
+// rather than ignoring it for a keyword-like term, @id or @reverse
+// (§4.2.2 steps 5, 13.3 and 14.2.2), which return before step 21.
+func definesTerm(term string, value interface{}) bool {
+	if ignoredKeywordPattern.MatchString(term) {
+		return false
+	}
+	termMap, _ := value.(map[string]interface{})
+	if rev, isString := termMap["@reverse"].(string); isString && ignoredKeywordPattern.MatchString(rev) {
+		return false
+	}
+	if id, isString := termMap["@id"].(string); isString && id != term && keywordLike(id) {
+		return false
+	}
+	return true
 }
 
 // ignoreTermDefinition ends a term definition whose @id or @reverse is

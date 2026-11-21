@@ -185,6 +185,7 @@ func (in *apiInput) baseIRI(opts *JsonLdOptions) string {
 func newCallContext(opts *JsonLdOptions) *Context {
 	ctx := NewContext(nil, opts)
 	ctx.documents = make(map[string]*RemoteDocument)
+	ctx.validated = make(map[scopedContextKey]bool)
 	return ctx
 }
 

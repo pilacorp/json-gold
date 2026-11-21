@@ -9,8 +9,6 @@ var skippedTests = map[string][]string{
 		"#tp001", // json-ld-1.0 processing mode is not supported
 	},
 	"testdata/expand-manifest.jsonld": {
-		"#tc032", // TODO
-		"#tc033", // TODO
 		"#ter56", // TODO: New test
 	},
 	"testdata/flatten-manifest.jsonld": {},
@@ -29,8 +27,6 @@ var skippedTests = map[string][]string{
 		"#tdi11", // No support for the rdfDirection option (compound-literal)
 		"#tdi12", // No support for the rdfDirection option (compound-literal)
 		"#te075", // No support for produceGeneralizedRdf
-		"#tc032", // TODO
-		"#tc033", // TODO
 		"#ter56", // TODO: new test
 	},
 	"testdata/html-manifest.jsonld": {

@@ -83,6 +83,25 @@ func TestNullTermEntriesAreChecked(t *testing.T) {
 	}
 }
 
+// A scoped context may name a term defined later in the same context. Go
+// maps have no order, so the result must not depend on iteration order.
+func TestScopedContextValidationIsDeterministic(t *testing.T) {
+	doc := map[string]interface{}{
+		"@context": map[string]interface{}{
+			"t": map[string]interface{}{"@id": "http://ex.org/t", "@context": map[string]interface{}{
+				"u": map[string]interface{}{"@id": "a"},
+			}},
+			"a": "http://ex.org/a",
+		},
+		"@id": "urn:s", "a": "v",
+	}
+	for i := 0; i < 100; i++ {
+		if _, err := NewJsonLdProcessor().Expand(doc, NewJsonLdOptions("")); err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+	}
+}
+
 // A term defined as null may have a compact IRI, an IRI or a relative path
 // as its key (§4.2.2 step 7); its value is then dropped. Expected values are
 // those of jsonld.js 8.3.3.
