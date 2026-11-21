@@ -109,6 +109,11 @@ func (td *TermDefinition) Copy() *TermDefinition {
 	return &result
 }
 
+// isPrefix reports the prefix flag; an unset flag is false.
+func (td *TermDefinition) isPrefix() bool {
+	return td.Prefix != nil && *td.Prefix
+}
+
 func DeepCompareTermDef(lhs *TermDefinition, rhs *TermDefinition, listOrderMatters bool) bool {
 	return lhs.ID == rhs.ID &&
 		lhs.Reverse == rhs.Reverse &&
@@ -117,6 +122,7 @@ func DeepCompareTermDef(lhs *TermDefinition, rhs *TermDefinition, listOrderMatte
 		lhs.Nest == rhs.Nest &&
 		lhs.Index == rhs.Index &&
 		lhs.Protected == rhs.Protected &&
+		lhs.isPrefix() == rhs.isPrefix() &&
 		reflect.DeepEqual(lhs.Container, rhs.Container) &&
 		reflect.DeepEqual(lhs.Direction, rhs.Direction) && lhs.HasDirection == rhs.HasDirection &&
 		reflect.DeepEqual(lhs.Language, rhs.Language) && lhs.HasLanguage == rhs.HasLanguage &&

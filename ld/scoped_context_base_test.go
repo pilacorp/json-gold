@@ -1,6 +1,7 @@
 package ld
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -110,5 +111,47 @@ func TestProtectedRedefinitionKeepsScopedContextBase(t *testing.T) {
 	}
 	if !strings.Contains(out.(string), `<https://ex.org/q> "v" .`) {
 		t.Fatalf("scoped term lost:\n%s", out)
+	}
+}
+
+// JSON-LD 1.1 API §4.2.2: a protected term redefined with another prefix
+// flag is not the same definition, so it is a protected term redefinition.
+func TestProtectedRedefinitionWithOtherPrefixIsRefused(t *testing.T) {
+	ctx := func(prefix bool) map[string]interface{} {
+		return map[string]interface{}{
+			"@version":   1.1,
+			"@protected": true,
+			"ex":         map[string]interface{}{"@id": "http://ex.org/", "@prefix": prefix},
+		}
+	}
+	_, err := NewJsonLdProcessor().Expand(map[string]interface{}{
+		"@context": []interface{}{ctx(true), ctx(false)},
+		"@id":      "urn:s:1",
+	}, NewJsonLdOptions(""))
+	var ldErr *JsonLdError
+	if !errors.As(err, &ldErr) || ldErr.Code != ProtectedTermRedefinition {
+		t.Fatalf("got %v, want %q", err, ProtectedTermRedefinition)
+	}
+}
+
+// An unset prefix flag is false: a protected term whose definition only
+// sets @type, redefined with the same IRI spelled out in @id, is the same
+// definition.
+func TestProtectedRedefinitionUnsetPrefixIsFalse(t *testing.T) {
+	_, err := NewJsonLdProcessor().Expand(map[string]interface{}{
+		"@context": []interface{}{
+			map[string]interface{}{
+				"@version": 1.1, "@vocab": "http://ex.org/", "@protected": true,
+				"p": map[string]interface{}{"@type": "@id"},
+			},
+			map[string]interface{}{
+				"@version": 1.1, "@protected": true,
+				"p": map[string]interface{}{"@id": "http://ex.org/p", "@type": "@id"},
+			},
+		},
+		"@id": "urn:s:1",
+	}, NewJsonLdOptions(""))
+	if err != nil {
+		t.Fatal(err)
 	}
 }
