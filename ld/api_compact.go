@@ -150,6 +150,10 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 				compactedValues := make([]interface{}, 0)
 
 				for _, v := range Arrayify(expandedValue) {
+					if v == nil { // keyword-like @id, see CompactValue
+						compactedValues = append(compactedValues, nil)
+						continue
+					}
 					cv, err := activeCtx.CompactIri(v.(string), nil, false, false)
 					if err != nil {
 						return nil, err
@@ -541,7 +545,9 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 						}
 						compactedItemMap := compactedItem.(map[string]interface{})
 						if compactedItemValue, containsValue := compactedItemMap[idKey]; containsValue {
-							mapKey = compactedItemValue.(string)
+							// A null @id (keyword-like IRI) leaves map key null,
+							// which becomes @none (§6.1.2 step 12.8.9.10).
+							mapKey, _ = compactedItemValue.(string)
 							delete(compactedItemMap, idKey)
 						} else {
 							mapKey = ""

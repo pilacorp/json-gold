@@ -641,7 +641,9 @@ func validateFrame(frame interface{}) error {
 			if _, isMap := idVal.(map[string]interface{}); isMap {
 				continue
 			}
-			if strings.HasPrefix(idVal.(string), "_:") {
+			// Framing §4.1: the @id of a frame must be IRIs. A keyword-like
+			// @id has expanded to null, which is not one.
+			if s, isString := idVal.(string); !isString || !IsAbsoluteIri(s) || strings.HasPrefix(s, "_:") {
 				return NewJsonLdError(InvalidFrame,
 					fmt.Sprintf("Invalid JSON-LD frame syntax; invalid value of @id: %v", id))
 			}
@@ -653,7 +655,8 @@ func validateFrame(frame interface{}) error {
 			if _, isMap := typeVal.(map[string]interface{}); isMap {
 				continue
 			}
-			if strings.HasPrefix(typeVal.(string), "_:") {
+			s, isString := typeVal.(string)
+			if !isString || (!IsAbsoluteIri(s) && s != "@json") || strings.HasPrefix(s, "_:") {
 				return NewJsonLdError(InvalidFrame,
 					fmt.Sprintf("Invalid JSON-LD frame syntax; invalid value of @type: %v", t))
 			}

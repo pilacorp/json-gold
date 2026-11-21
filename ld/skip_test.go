@@ -7,18 +7,14 @@ package ld_test
 var skippedTests = map[string][]string{
 	"testdata/compact-manifest.jsonld": {
 		"#tp001", // json-ld-1.0 processing mode is not supported
-		"#t0111", // TODO
 	},
 	"testdata/expand-manifest.jsonld": {
-		"#t0122", // TODO
 		"#tc032", // TODO
 		"#tc033", // TODO
 		"#tec02", // TODO
 		"#ter52", // TODO
 		"#ter56", // TODO: New test
 		"#tpr28", // TODO: New test
-		"#tpr38", // TODO: New test
-		"#tpr39", // TODO: New test
 	},
 	"testdata/flatten-manifest.jsonld": {},
 	"testdata/fromRdf-manifest.jsonld": {
@@ -42,8 +38,6 @@ var skippedTests = map[string][]string{
 		"#ter52", // TODO: new test
 		"#ter56", // TODO: new test
 		"#tpr28", // Skipped in Expand test suite
-		"#tpr38", // TODO
-		"#tpr39", // TODO
 	},
 	"testdata/html-manifest.jsonld": {
 		"#t", // HTML inputs not supported yet

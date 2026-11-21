@@ -277,7 +277,11 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 				}
 			}
 		} else if rtype, hasType := resultMap["@type"]; hasType { // 9)
-			if _, isList := rtype.([]interface{}); !isList {
+			if rtype == nil && !frameExpansion {
+				// A keyword-like type names no type: no rdf:type triple.
+				// A frame keeps it for frame validation to reject.
+				delete(resultMap, "@type")
+			} else if _, isList := rtype.([]interface{}); !isList {
 				resultMap["@type"] = []interface{}{rtype}
 			}
 		} else {
@@ -419,6 +423,14 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 					if err != nil {
 						return err
 					}
+					// JSON-LD 1.1 API §5.2.2 step 2: an IRI in the form of a
+					// keyword expands to null, and so does this @id.
+					if keywordLike(valueStr) {
+						if err := activeCtx.rejectKeywordLike(InvalidIDValue, valueStr); err != nil {
+							return err
+						}
+						expandedValue = nil
+					}
 				} else if frameExpansion {
 					switch v := value.(type) {
 					case map[string]interface{}:
@@ -482,10 +494,40 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 						if err != nil {
 							return err
 						}
+						// A keyword-like type expands to null (§5.2.2 step 2).
+						// The spec keeps the null in the array. A frame keeps
+						// it so frame validation rejects it; elsewhere it is
+						// dropped so later steps only see IRIs, with the same RDF.
+						if keywordLike(listElemStr) {
+							if err := activeCtx.rejectKeywordLike(InvalidTypeValue, listElemStr); err != nil {
+								return err
+							}
+							if frameExpansion {
+								expandedValueList = append(expandedValueList, nil)
+							}
+							continue
+						}
 						expandedValueList = append(expandedValueList, newVal)
+					}
+					// §5.1.2 step 13.4.4.5: a second key that expands to @type
+					// adds to the types already in result.
+					if containsKey {
+						expandedValueList = append(Arrayify(resultMap[expandedProperty]), expandedValueList...)
 					}
 					expandedValue = expandedValueList
 				case string:
+					if keywordLike(v) {
+						if err := activeCtx.rejectKeywordLike(InvalidTypeValue, v); err != nil {
+							return err
+						}
+						// Expands to null (§5.2.2 step 2), and step 13.4.16
+						// keeps the null: step 15 then rejects it on a value
+						// object and step 9 below drops it from a node.
+						if containsKey {
+							expandedValue = resultMap[expandedProperty]
+						}
+						break
+					}
 					expandedValue, err = typeScopedContext.ExpandIri(v, true, true, nil, nil)
 					if err != nil {
 						return err
@@ -706,8 +748,9 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 				// these values are scalars
 				expandedValue = []interface{}{value}
 			}
-			// 7.4.12)
-			if expandedValue != nil {
+			// 7.4.12) An @id or @type that expanded to null is kept as null
+			// (JSON-LD 1.1 API §5.1.2 step 13.4.16 skips only a null @value).
+			if expandedValue != nil || expandedProperty == "@id" || expandedProperty == "@type" {
 				resultMap[expandedProperty] = expandedValue
 			}
 			// 7.4.13)
@@ -1022,6 +1065,20 @@ func (api *JsonLdApi) expandIndexMap(activeCtx *Context, activeProperty string, 
 			}
 		}
 
+		// A keyword-like @id or @type map key expands to null (§5.2.2 step
+		// 2): the item gets a null @id, which the node map handles like any
+		// other, or no added type.
+		var nullKey bool
+		if (indexKey == "@id" || indexKey == "@type") && keywordLike(key) {
+			code := InvalidIDValue
+			if indexKey == "@type" {
+				code = InvalidTypeValue
+			}
+			if err := indexCtx.rejectKeywordLike(code, key); err != nil {
+				return nil, err
+			}
+			nullKey = true
+		}
 		if indexKey == "@id" {
 			// expand document relative
 			key, err = indexCtx.ExpandIri(key, true, false, nil, nil)
@@ -1041,8 +1098,8 @@ func (api *JsonLdApi) expandIndexMap(activeCtx *Context, activeProperty string, 
 			}
 			item := itemValue.(map[string]interface{})
 			if indexKey == "@type" {
-				if expandedKey == "@none" {
-					// ignore @none
+				if expandedKey == "@none" || nullKey {
+					// ignore @none and a null type
 				} else if types, hasType := item["@type"]; hasType {
 					switch v := types.(type) {
 					case string:
@@ -1065,7 +1122,11 @@ func (api *JsonLdApi) expandIndexMap(activeCtx *Context, activeProperty string, 
 
 			} else if _, containsKey := item[indexKey]; !containsKey && expandedKey != "@none" {
 				// 7.6.2.3.1)
-				item[indexKey] = key
+				if nullKey {
+					item[indexKey] = nil
+				} else {
+					item[indexKey] = key
+				}
 			}
 
 			// 7.6.2.3.2)

@@ -620,7 +620,15 @@ func (c *Context) CompactValue(activeProperty string, value map[string]interface
 	var err error
 
 	if hasID && idOrIndex { // 4
-		if propType == "@id" { // 4.1
+		if idVal == nil {
+			// A keyword-like @id expands to null (§5.2.2 step 2). IRI
+			// compacting null gives null (§6.2.2 step 1) for @id and @vocab
+			// mappings; otherwise step 9 keeps the node reference.
+			if propType == "@id" || propType == "@vocab" {
+				return nil, nil
+			}
+			result = value
+		} else if propType == "@id" { // 4.1
 			result, err = c.CompactIri(idVal.(string), nil, false, false)
 			if err != nil {
 				return nil, err
@@ -840,6 +848,11 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 			return NewJsonLdError(InvalidIRIMapping,
 				fmt.Sprintf("expected string for @reverse value. got %v", reverseValue))
 		}
+		// §4.2.2: a keyword-like @reverse leaves the term undefined, checked
+		// before IRI expansion turns it into null.
+		if ignoredKeywordPattern.MatchString(reverseStr) {
+			return c.ignoreTermDefinition(term, prevDefinition, defined, reverseStr)
+		}
 		id, err := c.ExpandIri(reverseStr, false, true, context, defined)
 		if err != nil {
 			return err
@@ -847,11 +860,6 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 		if !IsAbsoluteIri(id) {
 			return NewJsonLdError(InvalidIRIMapping, fmt.Sprintf(
 				"@context @reverse value must be an absolute IRI or a blank node identifier, got %s", id))
-		}
-
-		if ignoredKeywordPattern.MatchString(reverseStr) {
-			//log.Printf("Values beginning with '@' are reserved for future use and ignored: %s.", reverseStr)
-			return nil
 		}
 
 		definition.ID = id
@@ -865,8 +873,7 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 		if term != idStr {
 
 			if !IsKeyword(idStr) && ignoredKeywordPattern.MatchString(idStr) {
-				//log.Printf("Values beginning with '@' are reserved for future use and ignored: %s.", idStr)
-				return nil
+				return c.ignoreTermDefinition(term, prevDefinition, defined, idStr)
 			}
 
 			res, err := c.ExpandIri(idStr, false, true, context, defined)
@@ -1208,6 +1215,21 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 	return nil
 }
 
+// ignoreTermDefinition ends a term definition whose @id or @reverse is
+// keyword-like (§4.2.2 steps 13.3 and 14.2.2). The term keeps its previous
+// definition, as jsonld.js does: step 6 removed it, and returning without it
+// would let a later context redefine a protected term past step 27.
+func (c *Context) ignoreTermDefinition(term string, prev *TermDefinition, defined map[string]bool, iri string) error {
+	if err := c.rejectKeywordLike(InvalidIRIMapping, iri); err != nil {
+		return err
+	}
+	if prev != nil {
+		c.TermDefinitions[term] = prev
+	}
+	defined[term] = true
+	return nil
+}
+
 // RevertToPreviousContext reverts any type-scoped context in this active context to the previous context.
 func (c *Context) RevertToPreviousContext() *Context {
 	if c.previousContext == nil {
@@ -1215,6 +1237,21 @@ func (c *Context) RevertToPreviousContext() *Context {
 	} else {
 		return CopyContext(c.previousContext)
 	}
+}
+
+// rejectKeywordLike returns an error in safe mode, where a keyword-like IRI
+// must not turn into null without the caller knowing; otherwise nil.
+func (c *Context) rejectKeywordLike(code ErrorCode, iri string) error {
+	if c.options != nil && c.options.SafeMode {
+		return NewJsonLdError(code, fmt.Sprintf("keyword-like IRI %q expands to null", iri))
+	}
+	return nil
+}
+
+// keywordLike reports whether s has the form of a keyword without being one.
+// JSON-LD 1.1 API §5.2.2 step 2 expands such an IRI to null.
+func keywordLike(s string) bool {
+	return !IsKeyword(s) && ignoredKeywordPattern.MatchString(s)
 }
 
 // ExpandIri expands a string value to a full IRI.
@@ -1234,7 +1271,7 @@ func (c *Context) ExpandIri(value string, relative bool, vocab bool, context map
 		return value, nil
 	}
 
-	if !IsKeyword(value) && ignoredKeywordPattern.MatchString(value) {
+	if keywordLike(value) {
 		return "", nil
 	}
 
@@ -1545,14 +1582,19 @@ func (c *Context) CompactIri(iri string, value interface{}, relativeToVocab bool
 					preferredValues = append(preferredValues, "@reverse")
 				}
 
-				// 2.12.1)
-				result, err := c.CompactIri(idVal.(string), nil, true, false)
-				if err != nil {
-					return "", err
+				// 2.12.1) A keyword-like @id expanded to null; IRI compacting
+				// null gives null (§6.2.2 step 1), which no term maps to.
+				idStr, isString := idVal.(string)
+				result := ""
+				if isString {
+					var err error
+					if result, err = c.CompactIri(idStr, nil, true, false); err != nil {
+						return "", err
+					}
 				}
 				resultVal, hasResult := c.TermDefinitions[result]
 				check := false
-				if hasResult {
+				if isString && hasResult {
 					resultIDVal, hasResultID := resultVal.ID, resultVal.ID != ""
 					check = hasResultID && idVal == resultIDVal
 				}
@@ -1668,7 +1710,14 @@ func (c *Context) CompactIri(iri string, value interface{}, relativeToVocab bool
 
 	// compact IRI relative to base
 	if !relativeToVocab {
-		return RemoveBase(c.Values.Base, iri), nil
+		rel := RemoveBase(c.Values.Base, iri)
+		// A relative IRI in the form of a keyword would expand to null or to
+		// the keyword (§5.2.2 steps 1-2), so it gets a "./" prefix (test
+		// compact #t0111).
+		if ignoredKeywordPattern.MatchString(rel) {
+			rel = "./" + rel
+		}
+		return rel, nil
 	}
 
 	// return IRI as is
@@ -2076,6 +2125,12 @@ func (c *Context) ExpandValue(activeProperty string, value interface{}) (interfa
 			if err != nil {
 				return nil, err
 			}
+			if keywordLike(strVal) { // §5.2.2 step 2: expands to null
+				if err := c.rejectKeywordLike(InvalidIDValue, strVal); err != nil {
+					return nil, err
+				}
+				rval["@id"] = nil
+			}
 		} else {
 			rval["@value"] = value
 		}
@@ -2090,6 +2145,12 @@ func (c *Context) ExpandValue(activeProperty string, value interface{}) (interfa
 			rval["@id"], err = c.ExpandIri(strVal, true, true, nil, nil)
 			if err != nil {
 				return nil, err
+			}
+			if keywordLike(strVal) { // §5.2.2 step 2: expands to null
+				if err := c.rejectKeywordLike(InvalidIDValue, strVal); err != nil {
+					return nil, err
+				}
+				rval["@id"] = nil
 			}
 		} else {
 			rval["@value"] = value

@@ -118,7 +118,15 @@ func (api *JsonLdApi) generateNodeMap(nv *nodeValues, element interface{}, graph
 
 	// element is a node object
 
-	id := elem["@id"]
+	// An @id that expanded to null (a keyword-like IRI, §5.2.2 step 2) names
+	// no node; §7.2.2 does not cover it. As in jsonld.js, a value of a
+	// property is dropped with its properties, while a list item, a @reverse
+	// value and a node at graph level get a blank node identifier.
+	id, hasID := elem["@id"]
+	_, isReverse := activeSubject.(map[string]interface{})
+	if hasID && id == nil && activeProperty != "" && list == nil && !isReverse {
+		return list, nil
+	}
 	if id == nil {
 		id = issuer.GetId("")
 	} else if strings.HasPrefix(id.(string), "_:") {
