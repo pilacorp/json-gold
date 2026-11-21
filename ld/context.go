@@ -209,15 +209,15 @@ func (c *Context) Parse(localContext interface{}) (*Context, error) {
 	return c.parse(localContext, c.Values.Base, nil, false, true, false, false)
 }
 
-// maxRemoteContexts is the processor-defined limit of JSON-LD 1.1 API
-// §4.1.2 step 5.2.3 on remote contexts processed in one context
-// processing, counted across nesting and siblings so that a cycle or a
-// context listing its child twice per level ends early.
-const maxRemoteContexts = 256
+// DefaultMaxRemoteContexts is the limit used when
+// JsonLdOptions.MaxRemoteContexts is zero. It counts across nesting and
+// siblings, so a cycle or a context listing its child twice per level
+// ends early.
+const DefaultMaxRemoteContexts = 32
 
 // remoteContexts tracks the remote contexts of one context processing:
 // each URL is dereferenced once (step 5.2.4) and every processed remote
-// context counts toward maxRemoteContexts.
+// context counts toward the limit.
 type remoteContexts struct {
 	loaded    map[string]*RemoteDocument
 	processed int
@@ -290,7 +290,11 @@ func (c *Context) parse(localContext interface{}, baseURL string, remote *remote
 			uri := Resolve(baseURL, ctx)
 			// JSON-LD 1.1 §4.1.2 step 5.2.3. JSON-LD 1.0 names the same
 			// condition a recursive context inclusion.
-			if remote.processed >= maxRemoteContexts {
+			limit := c.options.MaxRemoteContexts
+			if limit <= 0 {
+				limit = DefaultMaxRemoteContexts
+			}
+			if remote.processed >= limit {
 				if result.processingMode(1.0) {
 					return nil, NewJsonLdError(RecursiveContextInclusion, uri)
 				}
@@ -298,7 +302,7 @@ func (c *Context) parse(localContext interface{}, baseURL string, remote *remote
 			}
 			remote.processed++
 
-			// 3.2.3: Dereference context, once per URL (step 5.2.4)
+			// Dereference context, once per URL (step 5.2.4)
 			rd, loaded := remote.loaded[uri]
 			if !loaded {
 				var err error

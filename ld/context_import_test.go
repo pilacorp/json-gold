@@ -231,11 +231,11 @@ func TestRemoteContextDereferencedOnce(t *testing.T) {
 	}
 }
 
-// Many sibling contexts in one array stay under the limit.
+// Many sibling contexts in one array stay under the default limit.
 func TestRemoteContextManySiblings(t *testing.T) {
 	docs := map[string]interface{}{}
 	ctx := []interface{}{}
-	for i := 0; i < 40; i++ {
+	for i := 0; i < 20; i++ {
 		u := fmt.Sprintf("https://example.org/s%d.jsonld", i)
 		docs[u] = map[string]interface{}{"@context": map[string]interface{}{fmt.Sprintf("t%d", i): "https://example.org/t"}}
 		ctx = append(ctx, u)
@@ -314,5 +314,54 @@ func TestRemoteContextImportWithoutDocumentURL(t *testing.T) {
 	}
 	if want := "<urn:s:1> <https://example.org/y> \"2\" .\n"; out.(string) != want {
 		t.Fatalf("got %q, want %q", out, want)
+	}
+}
+
+// A repeat of a cached context is processed again, so it counts toward
+// the limit although the loader sees one load. Without that, one fetched
+// context could be processed far more often than a loader budget allows.
+func TestRemoteContextRepeatsCountTowardLimit(t *testing.T) {
+	const u = "https://example.org/a.jsonld"
+	newDoc := func(n int) map[string]interface{} {
+		ctx := make([]interface{}, n)
+		for i := range ctx {
+			ctx[i] = u
+		}
+		return map[string]interface{}{"@context": ctx, "@id": "urn:s:1"}
+	}
+	newLoader := func() *urlDocumentLoader {
+		return &urlDocumentLoader{docs: map[string]interface{}{
+			u: map[string]interface{}{"@context": map[string]interface{}{"y": "https://example.org/y"}},
+		}}
+	}
+
+	loader := newLoader()
+	opts := NewJsonLdOptions("https://example.org/doc.jsonld")
+	opts.DocumentLoader = loader
+	if _, err := NewJsonLdProcessor().Expand(newDoc(32), opts); err != nil {
+		t.Fatalf("32 repeats under the default limit: %v", err)
+	}
+	_, err := NewJsonLdProcessor().Expand(newDoc(33), opts)
+	var ldErr *JsonLdError
+	if !errors.As(err, &ldErr) || ldErr.Code != ContextOverflow {
+		t.Fatalf("got %v, want %q", err, ContextOverflow)
+	}
+	if len(loader.got) != 2 {
+		t.Fatalf("loaded %d times over two documents, want 2", len(loader.got))
+	}
+
+	opts = NewJsonLdOptions("https://example.org/doc.jsonld")
+	opts.DocumentLoader = newLoader()
+	opts.MaxRemoteContexts = DefaultMaxRemoteContexts + 1
+	if _, err := NewJsonLdProcessor().Expand(newDoc(DefaultMaxRemoteContexts+1), opts); err != nil {
+		t.Fatalf("MaxRemoteContexts raised: %v", err)
+	}
+
+	opts = NewJsonLdOptions("https://example.org/doc.jsonld")
+	opts.DocumentLoader = newLoader()
+	opts.MaxRemoteContexts = 2
+	_, err = NewJsonLdProcessor().Expand(newDoc(3), opts)
+	if !errors.As(err, &ldErr) || ldErr.Code != ContextOverflow {
+		t.Fatalf("MaxRemoteContexts lowered: got %v, want %q", err, ContextOverflow)
 	}
 }

@@ -68,6 +68,15 @@ type JsonLdOptions struct { //nolint:stylecheck
 	OutputForm    string
 	SafeMode      bool
 
+	// MaxRemoteContexts is the processor limit of JSON-LD 1.1 API §4.1.2
+	// step 5.2.3: how many remote contexts one @context value may process,
+	// repeats and nested contexts included. The document's top-level
+	// context, each embedded node context, each scoped context applied and
+	// ExpandContext count separately. Each URL is loaded once per @context
+	// value, so a loader budget sees one load for up to this many
+	// processings of it. Zero or negative means DefaultMaxRemoteContexts.
+	MaxRemoteContexts int
+
 	// ExpandedElementHandler, when set, is called during expansion for each
 	// node object expansion keeps, with that object's JSON Pointer and the
 	// result of expanding it. See ElementHandler.
@@ -128,5 +137,6 @@ func (opt *JsonLdOptions) Copy() *JsonLdOptions {
 		OutputForm:             opt.OutputForm,
 		SafeMode:               opt.SafeMode,
 		ExpandedElementHandler: opt.ExpandedElementHandler,
+		MaxRemoteContexts:      opt.MaxRemoteContexts,
 	}
 }
