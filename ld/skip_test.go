@@ -10,7 +10,6 @@ var skippedTests = map[string][]string{
 		"#t0112", // TODO
 		"#t0113", // TODO
 		"#tin",   // TODO
-		"#tm023", // TODO
 		"#tp001", // TODO
 	},
 	"testdata/expand-manifest.jsonld": {

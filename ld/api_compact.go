@@ -539,39 +539,37 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 							return nil, err
 						}
 
-						compactedItemMap := compactedItem.(map[string]interface{})
-						var types []interface{}
-						if compactedItemValue, containsValue := compactedItemMap[typeKey]; containsValue {
-							var isArray bool
-							types, isArray = compactedItemValue.([]interface{})
-							if !isArray {
-								types = []interface{}{compactedItemValue}
-							}
-
-							delete(compactedItemMap, typeKey)
+						// §6.1.2: the first type is the map key and the rest
+						// stay on the item. An item compacted to an IRI string
+						// has no types, so it goes under @none.
+						if compactedItemMap, isMap := compactedItem.(map[string]interface{}); isMap {
+							types := Arrayify(compactedItemMap[typeKey])
 							if len(types) > 0 {
-								mapKey = types[0].(string)
+								mapKey, _ = types[0].(string)
 								types = types[1:]
 							}
-						} else {
-							types = make([]interface{}, 0)
-						}
+							switch len(types) {
+							case 0:
+								delete(compactedItemMap, typeKey)
+							case 1:
+								compactedItemMap[typeKey] = types[0]
+							default:
+								compactedItemMap[typeKey] = types
+							}
 
-						// if compactedItem contains a single entry whose key maps to @id, re-compact without @type
-						if len(compactedItemMap) == 1 {
-							if idVal, hasID := expandedItemMap["@id"]; hasID {
-								compactedItem, err = api.Compact(activeCtx, itemActiveProperty,
-									map[string]interface{}{
-										"@id": idVal,
-									}, compactArrays)
-								if err != nil {
-									return nil, err
+							// an item left with only its @id is compacted again
+							// without @type
+							if len(compactedItemMap) == 1 {
+								if idVal, hasID := expandedItemMap["@id"]; hasID {
+									compactedItem, err = api.Compact(activeCtx, itemActiveProperty,
+										map[string]interface{}{
+											"@id": idVal,
+										}, compactArrays)
+									if err != nil {
+										return nil, err
+									}
 								}
 							}
-						}
-
-						if len(types) > 0 {
-							AddValue(compactedItemMap, typeKey, types, false, false, false, false)
 						}
 					}
 
