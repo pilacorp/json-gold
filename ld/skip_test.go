@@ -6,11 +6,11 @@ package ld_test
 // Structure: <relative path to manifest file> ==> list of test ID prefixes to skip
 var skippedTests = map[string][]string{
 	"testdata/compact-manifest.jsonld": {
+		"#tp001", // json-ld-1.0 processing mode is not supported
 		"#t0111", // TODO
 		"#t0112", // TODO
 		"#t0113", // TODO
 		"#tin",   // TODO
-		"#tp001", // TODO
 	},
 	"testdata/expand-manifest.jsonld": {
 		"#t0122", // TODO
@@ -29,29 +29,26 @@ var skippedTests = map[string][]string{
 	},
 	"testdata/flatten-manifest.jsonld": {},
 	"testdata/fromRdf-manifest.jsonld": {
+		"#tdi05", // No support for the rdfDirection option (i18n-datatype)
+		"#tdi06", // No support for the rdfDirection option (i18n-datatype)
+		"#tdi11", // No support for the rdfDirection option (compound-literal)
+		"#tdi12", // No support for the rdfDirection option (compound-literal)
 		"#t0027", // TODO: New test
-		"#tdi05", // No support for i18n-datatype yet
-		"#tdi06", // No support for i18n-datatype yet
-		"#tdi11", // No support for compound-literal yet
-		"#tdi12", // No support for compound-literal yet
 		"#tjs",   // @json not yet supported
 	},
 	"testdata/remote-doc-manifest.jsonld": {
 		"#t0013", // HTML documents aren't supported yet
 	},
 	"testdata/toRdf-manifest.jsonld": {
+		"#tdi09", // No support for the rdfDirection option (i18n-datatype)
+		"#tdi10", // No support for the rdfDirection option (i18n-datatype)
+		"#tdi11", // No support for the rdfDirection option (compound-literal)
+		"#tdi12", // No support for the rdfDirection option (compound-literal)
+		"#te075", // No support for produceGeneralizedRdf
 		"#tc032", // TODO
 		"#tc033", // TODO
 		"#tc037", // TODO: New test
 		"#tc038", // TODO: New test
-		"#tdi09", // No support for i18n-datatype yet
-		"#tdi10", // No support for i18n-datatype yet
-		"#tdi11", // No support for compound-literal yet
-		"#tdi12", // No support for compound-literal yet
-		"#te075", // No support for GeneralizedRdf
-		"#te085", // test passes, bug in isomorphism check
-		"#te086", // test passes, bug in isomorphism check
-		"#te087", // test passes, bug in isomorphism check
 		"#te111", // TODO
 		"#te112", // TODO
 		"#te123", // TODO: new test
@@ -64,20 +61,12 @@ var skippedTests = map[string][]string{
 		"#tpr28", // Skipped in Expand test suite
 		"#tpr38", // TODO
 		"#tpr39", // TODO
-		"#ttn02", // TODO
 	},
 	"testdata/html-manifest.jsonld": {
 		"#t", // HTML inputs not supported yet
 	},
 	"testdata/frame-manifest.jsonld": {
 		"#t0064", // @type with @default value in frame requires expansion changes
-		"#t0069", // @json not yet supported
 		"#tin",   // More involved, with @included to pass current subjects instead of frame keys
-	},
-	"testdata/normalization/manifest-urgna2012.jsonld": {
-		"manifest-urgna2012#test060",
-	},
-	"testdata/normalization/manifest-urdna2015.jsonld": {
-		"manifest-urdna2015#test060",
 	},
 }
