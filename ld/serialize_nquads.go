@@ -119,9 +119,10 @@ func escape(str string) string {
 	return str
 }
 
-// escapeLiteral writes a literal in the canonical N-Quads form used by
-// RDFC-1.0. Named escapes cover the five controls plus quote and backslash.
-// The other C0 controls and DEL are \u00XX with uppercase hex.
+// escapeLiteral writes a literal in the canonical N-Quads form of
+// RDFC-1.0 Appendix A. Named escapes cover the five controls plus quote
+// and backslash. The other C0 controls, DEL, and U+FFFE and U+FFFF (outside
+// the XML 1.1 Char production) are \uXXXX with uppercase hex.
 func escapeLiteral(str string) string {
 	var b strings.Builder
 	b.Grow(len(str))
@@ -142,7 +143,7 @@ func escapeLiteral(str string) string {
 		case '\t':
 			b.WriteString(`\t`)
 		default:
-			if r <= 0x1F || r == 0x7F {
+			if r <= 0x1F || r == 0x7F || r == 0xFFFE || r == 0xFFFF {
 				const hex = "0123456789ABCDEF"
 				b.WriteString(`\u`)
 				b.WriteByte(hex[r>>12&0xF])
