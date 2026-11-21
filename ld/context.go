@@ -70,6 +70,15 @@ type Context struct {
 	// protectedNull holds the protected terms whose IRI mapping is null.
 	// TermDefinitions keeps such a term as nil, which cannot carry the flag.
 	protectedNull map[string]bool
+
+	// base makes this context an overlay of base, used only to validate a
+	// scoped context (§4.2.2 step 21) without copying the whole active
+	// context for every term. TermDefinitions, Protected and protectedNull
+	// hold the overlay's own changes and lookups fall back to base; removed
+	// marks the terms the overlay deleted. base is not modified while an
+	// overlay on it is in use, and an overlay is never returned to a caller.
+	base    *Context
+	removed map[string]bool
 }
 
 type Values struct {
@@ -204,6 +213,9 @@ func NewContext(values map[string]interface{}, options *JsonLdOptions) *Context 
 }
 
 func (c *Context) AsMap() map[string]interface{} {
+	if c.base != nil {
+		return c.flat().AsMap()
+	}
 	res := map[string]interface{}{
 		"values":          c.Values,
 		"termDefinitions": c.TermDefinitions,
@@ -219,6 +231,9 @@ func (c *Context) AsMap() map[string]interface{} {
 
 // CopyContext creates a full copy of the given context.
 func CopyContext(ctx *Context) *Context {
+	if ctx.base != nil {
+		return ctx.overlay()
+	}
 	context := NewContext(nil, ctx.options)
 	context.documents = ctx.documents
 	context.validated = ctx.validated
@@ -249,6 +264,115 @@ func CopyContext(ctx *Context) *Context {
 	}
 
 	return context
+}
+
+// overlay returns a context that reads through to c and keeps its own
+// changes, so building it costs nothing in the number of terms of c.
+func (c *Context) overlay() *Context {
+	values := *c.Values
+	return &Context{
+		Values:          &values,
+		TermDefinitions: make(map[string]*TermDefinition),
+		Protected:       make(map[string]bool),
+		fastCurieMap:    make(map[string]any),
+		options:         c.options,
+		previousContext: c.previousContext,
+		documents:       c.documents,
+		validated:       c.validated,
+		base:            c,
+	}
+}
+
+// flat returns c, or for an overlay a full context with the same terms, for
+// the operations that walk all terms.
+func (c *Context) flat() *Context {
+	if c.base == nil {
+		return c
+	}
+	f := CopyContext(c.base.flat())
+	values := *c.Values
+	f.Values = &values
+	f.previousContext = c.previousContext
+	for term := range c.removed {
+		delete(f.TermDefinitions, term)
+	}
+	for term, td := range c.TermDefinitions {
+		f.TermDefinitions[term] = td
+	}
+	for term := range c.Protected {
+		f.Protected[term] = true
+	}
+	for term, isNull := range c.protectedNull {
+		if !isNull {
+			delete(f.protectedNull, term)
+			continue
+		}
+		if f.protectedNull == nil {
+			f.protectedNull = make(map[string]bool)
+		}
+		f.protectedNull[term] = true
+	}
+	return f
+}
+
+func (c *Context) termDefinition(term string) (*TermDefinition, bool) {
+	for ctx := c; ctx != nil; ctx = ctx.base {
+		if td, ok := ctx.TermDefinitions[term]; ok {
+			return td, true
+		}
+		if ctx.removed[term] {
+			return nil, false
+		}
+	}
+	return nil, false
+}
+
+func (c *Context) setTermDefinition(term string, td *TermDefinition) {
+	c.TermDefinitions[term] = td
+	delete(c.removed, term)
+}
+
+func (c *Context) removeTermDefinition(term string) {
+	delete(c.TermDefinitions, term)
+	if c.base == nil {
+		return
+	}
+	if c.removed == nil {
+		c.removed = make(map[string]bool)
+	}
+	c.removed[term] = true
+}
+
+// hasProtected reports whether any term is protected. Protected only grows.
+func (c *Context) hasProtected() bool {
+	for ctx := c; ctx != nil; ctx = ctx.base {
+		if len(ctx.Protected) != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// isProtectedNull reads protectedNull through the overlays, where false
+// records a flag an overlay cleared.
+func (c *Context) isProtectedNull(term string) bool {
+	for ctx := c; ctx != nil; ctx = ctx.base {
+		if isNull, ok := ctx.protectedNull[term]; ok {
+			return isNull
+		}
+	}
+	return false
+}
+
+func (c *Context) clearProtectedNull(term string) {
+	if c.base == nil {
+		delete(c.protectedNull, term)
+		return
+	}
+	if c.protectedNull == nil {
+		c.protectedNull = make(map[string]bool)
+	}
+	c.protectedNull[term] = false
 }
 
 // Parse processes a local context, retrieving any URLs as necessary, and
@@ -328,7 +452,7 @@ func (c *Context) validateScopedContext(termValue interface{}, baseURL string, r
 		validated[key] = true
 	}
 	copied := &remoteContexts{loaded: remote.loaded, processed: remote.processed, validated: remote.validated}
-	if _, err := c.parse(scoped, baseURL, copied, false, true, false, true); err != nil {
+	if _, err := c.overlay().parse(scoped, baseURL, copied, false, true, false, true); err != nil {
 		return NewJsonLdError(InvalidScopedContext, err)
 	}
 	return nil
@@ -400,7 +524,7 @@ func (c *Context) parse(localContext interface{}, baseURL string, remote *remote
 		if context == nil {
 			// We can't nullify if there are protected terms and we're
 			// not allowing overrides (e.g. processing a property term scoped context)
-			if !overrideProtected && len(result.Protected) != 0 {
+			if !overrideProtected && result.hasProtected() {
 				return nil, NewJsonLdError(InvalidContextNullification,
 					"tried to nullify a context with protected terms outside of a term definition.")
 			}
@@ -889,9 +1013,9 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 	}
 
 	// keep reference to previous mapping for potential `@protected` check
-	prevDefinition := c.TermDefinitions[term]
+	prevDefinition, _ := c.termDefinition(term)
 
-	delete(c.TermDefinitions, term)
+	c.removeTermDefinition(term)
 
 	// casting the value so it doesn't have to be done below everytime
 	val := mapValue
@@ -1027,7 +1151,7 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 					return err
 				}
 			}
-			if termDef, hasTermDef := c.TermDefinitions[prefix]; hasTermDef {
+			if termDef, hasTermDef := c.termDefinition(prefix); hasTermDef {
 				suffix := term[colIndex+1:]
 				definition.ID = termDef.ID + suffix
 			} else {
@@ -1293,10 +1417,10 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 
 	// Check for overriding protected terms. A protected null mapping
 	// differs from any definition with an IRI mapping.
-	if c.protectedNull[term] && !overrideProtected {
+	if c.isProtectedNull(term) && !overrideProtected {
 		return NewJsonLdError(ProtectedTermRedefinition, "invalid JSON-LD syntax; tried to redefine a protected term")
 	}
-	delete(c.protectedNull, term)
+	c.clearProtectedNull(term)
 	if prevDefinition != nil {
 		if protectedVal := prevDefinition.Protected; protectedVal && !overrideProtected {
 			// force new term to continue to be protected and see if the mappings would be equal
@@ -1312,7 +1436,7 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 	}
 
 	// 18)
-	c.TermDefinitions[term] = definition
+	c.setTermDefinition(term, definition)
 
 	return nil
 }
@@ -1336,10 +1460,10 @@ func (c *Context) defineNullTerm(term string, mapValue map[string]interface{}, p
 			return NewJsonLdError(ProtectedTermRedefinition, "invalid JSON-LD syntax; tried to redefine a protected term")
 		}
 		// An identical redefinition keeps the term protected.
-		protectTerm = protectTerm || c.protectedNull[term]
+		protectTerm = protectTerm || c.isProtectedNull(term)
 	}
 
-	c.TermDefinitions[term] = nil
+	c.setTermDefinition(term, nil)
 	if protectTerm {
 		if c.protectedNull == nil {
 			c.protectedNull = make(map[string]bool)
@@ -1347,7 +1471,7 @@ func (c *Context) defineNullTerm(term string, mapValue map[string]interface{}, p
 		c.protectedNull[term] = true
 		c.Protected[term] = true
 	} else {
-		delete(c.protectedNull, term)
+		c.clearProtectedNull(term)
 	}
 	defined[term] = true
 	return nil
@@ -1379,7 +1503,7 @@ func (c *Context) ignoreTermDefinition(term string, prev *TermDefinition, define
 		return err
 	}
 	if prev != nil {
-		c.TermDefinitions[term] = prev
+		c.setTermDefinition(term, prev)
 	}
 	defined[term] = true
 	return nil
@@ -1439,7 +1563,7 @@ func (c *Context) ExpandIri(value string, relative bool, vocab bool, context map
 		}
 	}
 	// 3)
-	if termDef, hasTermDef := c.TermDefinitions[value]; vocab && hasTermDef {
+	if termDef, hasTermDef := c.termDefinition(value); vocab && hasTermDef {
 		if termDef != nil {
 			return termDef.ID, nil
 		}
@@ -1469,7 +1593,7 @@ func (c *Context) ExpandIri(value string, relative bool, vocab bool, context map
 		// 4.4)
 		// If active context contains a term definition for prefix, return the result of concatenating
 		// the IRI mapping associated with prefix and suffix.
-		termDef, hasPrefix := c.TermDefinitions[prefix]
+		termDef, hasPrefix := c.termDefinition(prefix)
 		if hasPrefix && termDef.ID != "" && termDef.Prefix != nil && *termDef.Prefix {
 			return termDef.ID + suffix, nil
 		} else if IsAbsoluteIri(value) {
@@ -1510,6 +1634,9 @@ func (c *Context) ExpandIri(value string, relative bool, vocab bool, context map
 //
 // Returns the compacted term, prefix, keyword alias, or original IRI.
 func (c *Context) CompactIri(iri string, value interface{}, relativeToVocab bool, reverse bool) (string, error) {
+	if c.base != nil {
+		return c.flat().CompactIri(iri, value, relativeToVocab, reverse)
+	}
 	// 1)
 	if iri == "" {
 		return "", nil
@@ -1747,7 +1874,7 @@ func (c *Context) CompactIri(iri string, value interface{}, relativeToVocab bool
 						return "", err
 					}
 				}
-				resultVal, hasResult := c.TermDefinitions[result]
+				resultVal, hasResult := c.termDefinition(result)
 				check := false
 				if isString && hasResult {
 					resultIDVal, hasResultID := resultVal.ID, resultVal.ID != ""
@@ -1794,7 +1921,7 @@ func (c *Context) CompactIri(iri string, value interface{}, relativeToVocab bool
 				// use suffix as relative iri if it is not a term in the
 				// active context
 				suffix := iri[len(vocab):]
-				if _, hasSuffix := c.TermDefinitions[suffix]; !hasSuffix {
+				if _, hasSuffix := c.termDefinition(suffix); !hasSuffix {
 					return suffix, nil
 				}
 			}
@@ -1825,7 +1952,7 @@ func (c *Context) CompactIri(iri string, value interface{}, relativeToVocab bool
 	for i := len(partialMatches) - 1; i >= 0; i-- {
 		entry := partialMatches[i]
 		for _, term := range entry.terms {
-			termDefinitionAny, ok := c.TermDefinitions[term]
+			termDefinitionAny, ok := c.termDefinition(term)
 			if !ok {
 				continue
 			}
@@ -1836,7 +1963,7 @@ func (c *Context) CompactIri(iri string, value interface{}, relativeToVocab bool
 			//   the mapping matches the IRI
 			curie := term + ":" + iri[len(entry.iri):]
 			prefix := termDefinitionAny.Prefix
-			curieMapping, hasCurie := c.TermDefinitions[curie]
+			curieMapping, hasCurie := c.termDefinition(curie)
 
 			isUsableCurie := prefix != nil && *prefix && (!hasCurie || value == nil && curieMapping.ID == iri)
 
@@ -1888,6 +2015,9 @@ func (c *Context) CompactIri(iri string, value interface{}, relativeToVocab bool
 //
 // Returns a map from prefix string to IRI string
 func (c *Context) GetPrefixes(onlyCommonPrefixes bool) map[string]string {
+	if c.base != nil {
+		return c.flat().GetPrefixes(onlyCommonPrefixes)
+	}
 	prefixes := make(map[string]string)
 
 	for term, termDefinition := range c.TermDefinitions {
@@ -1910,6 +2040,9 @@ func (c *Context) GetPrefixes(onlyCommonPrefixes bool) map[string]string {
 // if not already generated for the given active context.
 // See http://www.w3.org/TR/json-ld-api/#inverse-context-creation for further details.
 func (c *Context) GetInverse() map[string]interface{} {
+	if c.base != nil {
+		return c.flat().GetInverse()
+	}
 
 	// lazily create inverse
 	if c.inverse != nil {
@@ -1934,7 +2067,7 @@ func (c *Context) GetInverse() map[string]interface{} {
 	irisToTerms := make(map[string][]string, 0)
 
 	for _, term := range terms {
-		definition := c.TermDefinitions[term]
+		definition, _ := c.termDefinition(term)
 		// 3.1)
 		if definition == nil {
 			continue
@@ -2182,7 +2315,7 @@ func (c *Context) SelectTerm(iri string, containers []string, typeLanguage strin
 
 // GetContainer retrieves container mapping for the given property.
 func (c *Context) GetContainer(property string) []string {
-	td, ok := c.TermDefinitions[property]
+	td, ok := c.termDefinition(property)
 	if ok && td != nil && td.Container != nil {
 		return td.Container
 	}
@@ -2192,7 +2325,7 @@ func (c *Context) GetContainer(property string) []string {
 
 // GetContainer retrieves container mapping for the given property.
 func (c *Context) HasContainerMapping(property string, val string) bool {
-	td, ok := c.TermDefinitions[property]
+	td, ok := c.termDefinition(property)
 	if ok && td != nil && td.Container != nil {
 		for _, container := range td.Container {
 			if container == val {
@@ -2259,7 +2392,7 @@ func (c *Context) GetDirectionMapping(property string) string {
 
 // GetTermDefinition returns a term definition for the given key
 func (c *Context) GetTermDefinition(key string) *TermDefinition {
-	if value, ok := c.TermDefinitions[key]; ok {
+	if value, ok := c.termDefinition(key); ok {
 		return value
 	}
 	return nil
@@ -2344,6 +2477,9 @@ func (c *Context) ExpandValue(activeProperty string, value interface{}) (interfa
 
 // Serialize transforms the context back into JSON form.
 func (c *Context) Serialize() (map[string]interface{}, error) {
+	if c.base != nil {
+		return c.flat().Serialize()
+	}
 	ctx := make(map[string]interface{})
 
 	baseVal := c.Values.Base
