@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/pilacorp/json-gold/ld/internal/jsoncanonicalizer"
 )
@@ -162,8 +163,15 @@ func IsLiteral(node Node) bool {
 var patternInteger = regexp.MustCompile(`^[\-+]?\d+$`)
 var patternDouble = regexp.MustCompile(`^(\+|-)?(\d+(\.\d*)?|\.\d+)([Ee](\+|-)?\d+)?$`)
 
-// RdfToObject converts an RDF triple object to a JSON-LD object.
+// RdfToObject converts an RDF triple object to a JSON-LD object, with the
+// rules of JSON-LD 1.1 processing mode.
 func RdfToObject(n Node, useNativeTypes bool) (map[string]interface{}, error) {
+	return rdfToObject(n, useNativeTypes, true)
+}
+
+// rdfToObject is §8.4.2 RDF to Object Conversion. jsonLiterals is false in
+// json-ld-1.0 processing mode, where rdf:JSON is an ordinary datatype.
+func rdfToObject(n Node, useNativeTypes bool, jsonLiterals bool) (map[string]interface{}, error) {
 	// If value is an an IRI or a blank node identifier, return a new
 	// JSON object consisting
 	// of a single member @id whose value is set to value.
@@ -174,6 +182,18 @@ func RdfToObject(n Node, useNativeTypes bool) (map[string]interface{}, error) {
 	}
 
 	literal := n.(Literal)
+
+	// §8.4.2: a JSON literal becomes its JSON value with @type @json.
+	if jsonLiterals && literal.Datatype == RDFJSONLiteral {
+		var v interface{}
+		if !utf8.ValidString(literal.Value) {
+			return nil, NewJsonLdError(InvalidJsonLiteral, "JSON literal is not valid UTF-8")
+		}
+		if err := json.Unmarshal([]byte(literal.Value), &v); err != nil {
+			return nil, NewJsonLdError(InvalidJsonLiteral, err)
+		}
+		return map[string]interface{}{"@value": v, "@type": "@json"}, nil
+	}
 
 	// convert literal object to JSON-LD
 	rval := map[string]interface{}{
@@ -193,33 +213,33 @@ func RdfToObject(n Node, useNativeTypes bool) (map[string]interface{}, error) {
 			case XSDString:
 				// prevent default case from matching, i.e. prevent adding @type for xsd:string
 			case XSDBoolean:
+				// "1" and "0" are in the xsd:boolean lexical space too
+				// (XML Schema 1.1 Part 2 §3.3.2; test fromRdf #t0027).
 				switch value {
-				case "true":
+				case "true", "1":
 					rval["@value"] = true
-				case "false":
+				case "false", "0":
 					rval["@value"] = false
 				default:
 					// do not replace the value but add the boolean type
 					rval["@type"] = datatype
 				}
+			// §8.4.2: a value with no native JSON form, such as an integer
+			// outside int64, "INF" or a double that overflows, stays a typed
+			// string (test fromRdf #t0027).
 			case XSDInteger: // http://www.w3.org/TR/xmlschema11-2/#integer
-				if patternInteger.MatchString(value) {
-					i, err := strconv.ParseInt(value, 10, 64)
-					if err != nil {
-						return nil, NewJsonLdError(ParseError, nil)
-					}
+				if i, err := strconv.ParseInt(value, 10, 64); err == nil && patternInteger.MatchString(value) {
 					rval["@value"] = i
+				} else {
+					rval["@type"] = datatype
 				}
 			case XSDDouble, XSDFloat: // http://www.w3.org/TR/xmlschema11-2/#nt-doubleRep
-				if patternDouble.MatchString(value) {
-					d, err := strconv.ParseFloat(value, 64)
-					if err != nil {
-						return nil, NewJsonLdError(ParseError, nil)
-					}
-					// ParseFloat successfully parses strings like "NaN", "Inf", and "-Inf" without returning an error
-					if !math.IsNaN(d) && !math.IsInf(d, 0) {
-						rval["@value"] = d
-					}
+				// ParseFloat accepts "NaN" and "Inf", and reports overflow as an error.
+				if d, err := strconv.ParseFloat(value, 64); err == nil && patternDouble.MatchString(value) &&
+					!math.IsNaN(d) && !math.IsInf(d, 0) {
+					rval["@value"] = d
+				} else {
+					rval["@type"] = datatype
 				}
 			default:
 				// do not add xsd:string type

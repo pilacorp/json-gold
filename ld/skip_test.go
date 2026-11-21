@@ -33,8 +33,6 @@ var skippedTests = map[string][]string{
 		"#tdi06", // No support for the rdfDirection option (i18n-datatype)
 		"#tdi11", // No support for the rdfDirection option (compound-literal)
 		"#tdi12", // No support for the rdfDirection option (compound-literal)
-		"#t0027", // TODO: New test
-		"#tjs",   // @json not yet supported
 	},
 	"testdata/remote-doc-manifest.jsonld": {
 		"#t0013", // HTML documents aren't supported yet
