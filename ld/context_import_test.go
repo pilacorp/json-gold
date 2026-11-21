@@ -11,6 +11,7 @@ type urlDocumentLoader struct {
 	docs      map[string]interface{}
 	redirects map[string]string // requested URL -> final URL after redirects
 	noDocURL  bool              // leave RemoteDocument.DocumentURL empty
+	links     map[string]string // final URL -> Link header context target
 	got       []string
 }
 
@@ -26,7 +27,7 @@ func (l *urlDocumentLoader) LoadDocument(u string) (*RemoteDocument, error) {
 	if l.noDocURL {
 		u = ""
 	}
-	return &RemoteDocument{DocumentURL: u, Document: doc}, nil
+	return &RemoteDocument{DocumentURL: u, Document: doc, ContextURL: l.links[u]}, nil
 }
 
 // A relative @vocab in a remote context must resolve against the document

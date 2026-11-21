@@ -40,28 +40,31 @@ func (jldp *JsonLdProcessor) Compact(input interface{}, context interface{},
 		opts = opts.Copy()
 	}
 
-	if inputStr, isString := input.(string); isString && opts.Base == "" {
-		opts.Base = inputStr
-	}
-
 	// 1)
 	// TODO: look into promises
 
 	// 2-6) NOTE: these are all the same steps as in expand
-	expanded, err := jldp.expand(input, opts)
+	in, err := loadInput(input, opts)
+	if err != nil {
+		return nil, err
+	}
+	expanded, err := jldp.expandInput(in, opts)
 	if err != nil {
 		return nil, err
 	}
 
-	// 7)
+	// 7) JSON-LD 1.1 API §9.2 compact() steps 5, 7 and 8: the context
+	// resolves against the input's base URL, and compaction uses its base IRI.
 	context = CloneDocument(context)
 	contextMap, isMap := context.(map[string]interface{})
 	innerCtx, hasCtx := contextMap["@context"]
 	if isMap && hasCtx {
 		context = innerCtx
 	}
+	contextBase := in.baseURL(opts)
+	opts.Base = in.baseIRI(opts)
 	activeCtx := NewContext(nil, opts)
-	activeCtx, err = activeCtx.Parse(context)
+	activeCtx, err = activeCtx.parse(context, contextBase, nil, false, true, false, false)
 	if err != nil {
 		return nil, err
 	}
@@ -116,39 +119,82 @@ func (jldp *JsonLdProcessor) Expand(input interface{}, opts *JsonLdOptions) ([]i
 }
 
 func (jldp *JsonLdProcessor) expand(input interface{}, opts *JsonLdOptions) ([]interface{}, error) {
+	in, err := loadInput(input, opts)
+	if err != nil {
+		return nil, err
+	}
+	return jldp.expandInput(in, opts)
+}
 
-	// 1)
-	// TODO: look into promises
+// apiInput is the input of an API method after JSON-LD 1.1 API §9.2
+// expand() step 3: a dereferenced document keeps the URL it was loaded
+// from, after redirects, and the context URL of its Link header.
+type apiInput struct {
+	document    interface{}
+	documentURL string
+	contextURL  string
+}
 
-	var remoteContext string
+// loadInput dereferences input when it is an IRI. Any other input is the
+// document itself, with no documentURL.
+func loadInput(input interface{}, opts *JsonLdOptions) (*apiInput, error) {
+	iri, isString := input.(string)
+	if !isString || !strings.Contains(iri, ":") {
+		return &apiInput{document: input}, nil
+	}
+	rd, err := opts.DocumentLoader.LoadDocument(iri)
+	if err != nil {
+		return nil, err
+	}
+	if rd == nil || rd.Document == nil || rd.Document == "" {
+		return nil, NewJsonLdError(LoadingDocumentFailed, iri)
+	}
+	documentURL := rd.DocumentURL
+	if documentURL == "" {
+		documentURL = iri
+	}
+	in := &apiInput{document: rd.Document, documentURL: documentURL}
+	if rd.ContextURL != "" {
+		// A relative Link header target resolves against the URL the
+		// document came from (RFC 8288 §3.1, RFC 3986 §5.1.3).
+		in.contextURL = Resolve(documentURL, rd.ContextURL)
+	}
+	return in, nil
+}
 
-	// 2)
-	if iri, isString := input.(string); isString && strings.Contains(iri, ":") {
-		rd, err := opts.DocumentLoader.LoadDocument(iri)
-		if err != nil {
-			return nil, err
-		}
-		if rd.Document == "" {
-			return nil, NewJsonLdError(LoadingDocumentFailed, err)
-		}
-		input = rd.Document
-		iri = rd.DocumentURL
+// baseURL is what the input's contexts and expandContext resolve against:
+// the documentURL, else the base option (§9.2 expand() steps 5, 6 and 8).
+func (in *apiInput) baseURL(opts *JsonLdOptions) string {
+	if in.documentURL != "" {
+		return in.documentURL
+	}
+	return opts.Base
+}
 
-		// if set the base in options should override the base iri in the
-		// active context
-		// thus only set this as the base iri if it's not already set in
-		// options
-		if opts.Base == "" {
-			opts.Base = iri
-		}
+// baseIRI is what relative IRIs in the input resolve against: the base
+// option overrides the documentURL (§9.2 expand() step 5).
+func (in *apiInput) baseIRI(opts *JsonLdOptions) string {
+	if opts.Base != "" {
+		return opts.Base
+	}
+	return in.documentURL
+}
 
-		if rd.ContextURL != "" {
-			remoteContext = rd.ContextURL
-		}
+func (jldp *JsonLdProcessor) expandInput(in *apiInput, opts *JsonLdOptions) ([]interface{}, error) {
+	// The Expansion algorithm reads opts.Base as its base URL, and a null
+	// context resets the base IRI to it (§4.1.2 step 5.1.2). Both are the
+	// original base URL, which differs from the base IRI when the base
+	// option is set for a remote document.
+	baseURL := in.baseURL(opts)
+	expandOpts := opts
+	if opts.Base != baseURL {
+		expandOpts = opts.Copy()
+		expandOpts.Base = baseURL
 	}
 
 	// 3)
-	activeCtx := NewContext(nil, opts)
+	activeCtx := NewContext(nil, expandOpts)
+	activeCtx.Values.Base = in.baseIRI(opts)
 
 	// 4)
 	if opts.ExpandContext != nil {
@@ -160,23 +206,23 @@ func (jldp *JsonLdProcessor) expand(input interface{}, opts *JsonLdOptions) ([]i
 		}
 
 		var err error
-		activeCtx, err = activeCtx.Parse(exCtx)
+		activeCtx, err = activeCtx.parse(exCtx, baseURL, nil, false, true, false, false)
 		if err != nil {
 			return nil, err
 		}
 	}
 
 	// 5)
-	if remoteContext != "" {
+	if in.contextURL != "" {
 		var err error
-		if activeCtx, err = activeCtx.Parse(remoteContext); err != nil {
+		if activeCtx, err = activeCtx.parse(in.contextURL, in.contextURL, nil, false, true, false, false); err != nil {
 			return nil, err
 		}
 	}
 
 	// 6)
 	api := NewJsonLdApi()
-	expanded, err := api.Expand(activeCtx, "", input, opts, false, nil)
+	expanded, err := api.Expand(activeCtx, "", in.document, expandOpts, false, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -214,15 +260,16 @@ func (jldp *JsonLdProcessor) Flatten(input interface{}, context interface{}, opt
 		opts = opts.Copy()
 	}
 
-	if inputStr, isString := input.(string); isString && opts.Base == "" {
-		opts.Base = inputStr
-	}
-
 	// 2-6) NOTE: these are all the same steps as in expand
-	expanded, err := jldp.expand(input, opts)
+	in, err := loadInput(input, opts)
 	if err != nil {
 		return nil, err
 	}
+	expanded, err := jldp.expandInput(in, opts)
+	if err != nil {
+		return nil, err
+	}
+	opts.Base = in.baseIRI(opts)
 	// 7)
 	contextMap, isMap := context.(map[string]interface{})
 	innerCtx, hasCtx := contextMap["@context"]
@@ -287,6 +334,9 @@ func (jldp *JsonLdProcessor) Flatten(input interface{}, context interface{}, opt
 	}
 	// 8)
 	if context != nil && len(flattened) > 0 {
+		// §9.2 flatten() step 6 compacts the flattened output, not a remote
+		// document, so compact() step 5 takes the base option as context
+		// base. Without one, opts.Base holds the input's documentUrl.
 		activeCtx := NewContext(nil, opts)
 		activeCtx, err = activeCtx.Parse(context)
 		if err != nil {
@@ -330,19 +380,24 @@ func (jldp *JsonLdProcessor) Frame(input interface{}, frame interface{}, opts *J
 		opts = opts.Copy()
 	}
 
-	if inputStr, isString := input.(string); isString && opts.Base == "" {
-		opts.Base = inputStr
-	}
-
 	if _, isMap := frame.(map[string]interface{}); isMap {
 		frame = CloneDocument(frame)
 	}
 
 	// 2. Set expanded input to the result of using the expand method using input and options.
-	expandedInput, err := jldp.Expand(input, opts)
+	in, err := loadInput(input, opts)
 	if err != nil {
 		return nil, err
 	}
+	expandedInput, err := jldp.expandInput(in, opts)
+	if err != nil {
+		return nil, err
+	}
+	// The frame and its context resolve against the input's base IRI. The
+	// Framing REC gives them the base option alone; using the input's
+	// documentUrl when there is none keeps relative frames working, like
+	// jsonld.js.
+	opts.Base = in.baseIRI(opts)
 
 	// 3. Set expanded frame to the result of using the expand method using frame and options
 	// with expandContext set to null and processingMode set to json-ld-1.1-expand-frame.
