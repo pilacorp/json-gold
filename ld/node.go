@@ -258,11 +258,11 @@ func objectToRDF(item interface{}, issuer *IdentifierIssuer, graphName string, t
 			}
 			marshaled, err := json.Marshal(toCanon)
 			if err != nil {
-				return nil, triples, err
+				return nil, triples, NewJsonLdError(InvalidJsonLiteral, err)
 			}
 			jsonLiteralValByte, err := jsoncanonicalizer.Transform(marshaled)
 			if err != nil {
-				return nil, triples, err
+				return nil, triples, NewJsonLdError(InvalidJsonLiteral, err)
 			}
 			if wrap {
 				jsonLiteralValByte = jsonLiteralValByte[1 : len(jsonLiteralValByte)-1]

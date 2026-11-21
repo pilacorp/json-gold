@@ -77,6 +77,7 @@ const (
 	InvalidIncludedValue        ErrorCode = "invalid @included value"
 	InvalidImportValue          ErrorCode = "invalid @import value"
 	IRIConfusedWithPrefix       ErrorCode = "IRI confused with prefix"
+	InvalidJsonLiteral          ErrorCode = "invalid JSON literal"
 
 	// non spec related errors
 	SyntaxError     ErrorCode = "syntax error"
