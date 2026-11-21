@@ -11,10 +11,7 @@ var skippedTests = map[string][]string{
 	"testdata/expand-manifest.jsonld": {
 		"#tc032", // TODO
 		"#tc033", // TODO
-		"#tec02", // TODO
-		"#ter52", // TODO
 		"#ter56", // TODO: New test
-		"#tpr28", // TODO: New test
 	},
 	"testdata/flatten-manifest.jsonld": {},
 	"testdata/fromRdf-manifest.jsonld": {
@@ -34,10 +31,7 @@ var skippedTests = map[string][]string{
 		"#te075", // No support for produceGeneralizedRdf
 		"#tc032", // TODO
 		"#tc033", // TODO
-		"#tec02", // TODO: new test
-		"#ter52", // TODO: new test
 		"#ter56", // TODO: new test
-		"#tpr28", // Skipped in Expand test suite
 	},
 	"testdata/html-manifest.jsonld": {
 		"#t", // HTML inputs not supported yet

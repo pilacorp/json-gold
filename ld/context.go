@@ -62,6 +62,10 @@ type Context struct {
 	// scoped contexts and @import included. It is nil on a Context the
 	// caller builds, which keeps no documents between calls.
 	documents map[string]*RemoteDocument
+
+	// protectedNull holds the protected terms whose IRI mapping is null.
+	// TermDefinitions keeps such a term as nil, which cannot carry the flag.
+	protectedNull map[string]bool
 }
 
 type Values struct {
@@ -224,6 +228,13 @@ func CopyContext(ctx *Context) *Context {
 
 	for k, v := range ctx.Protected {
 		context.Protected[k] = v
+	}
+
+	if len(ctx.protectedNull) > 0 {
+		context.protectedNull = make(map[string]bool, len(ctx.protectedNull))
+		for k := range ctx.protectedNull {
+			context.protectedNull[k] = true
+		}
 	}
 
 	// do not copy c.inverse, because it will be regenerated
@@ -753,15 +764,47 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 		return NewJsonLdError(CyclicIRIMapping, term)
 	}
 
+	// 2)
+	if term == "" {
+		return NewJsonLdError(InvalidTermDefinition, "the empty string cannot be a term")
+	}
+
 	defined[term] = false
 
 	value := context[term]
 	mapValue, isMap := value.(map[string]interface{})
-	idValue, hasID := mapValue["@id"]
-	if value == nil || (isMap && hasID && idValue == nil) {
-		c.TermDefinitions[term] = nil
-		defined[term] = true
+
+	// 4) and 5) come before the value is checked, so a keyword defined as
+	// null or as a non-map is a keyword redefinition. @type may only take a
+	// map holding @container: @set, @protected or both; an empty map is not one.
+	if IsKeyword(term) {
+		var hasAllowedKeysOnly = true
+		for k := range mapValue {
+			if k != "@container" && k != "@protected" {
+				hasAllowedKeysOnly = false
+				break
+			}
+		}
+		isSet := isMap && len(mapValue) > 0 && (mapValue["@container"] == "@set" || mapValue["@container"] == nil)
+		if c.processingMode(1.1) && term == "@type" && hasAllowedKeysOnly && isSet {
+			// this is the only case were redefining a keyword is allowed
+		} else {
+			return NewJsonLdError(KeywordRedefinition, term)
+		}
+	} else if ignoredKeywordPattern.MatchString(term) {
+		//log.Printf("Terms beginning with '@' are reserved for future use and ignored: %s.", term)
 		return nil
+	}
+
+	// 7) and 14.1: a null value is {"@id": null}. A term whose IRI mapping is
+	// null goes through the same entry checks; only steps 13 and 14 differ.
+	nullID := false
+	if value == nil {
+		mapValue = map[string]interface{}{"@id": nil}
+		isMap = true
+		nullID = true
+	} else if idValue, hasID := mapValue["@id"]; isMap && hasID && idValue == nil {
+		nullID = true
 	}
 
 	simpleTerm := false
@@ -773,26 +816,6 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 
 	if !isMap {
 		return NewJsonLdError(InvalidTermDefinition, value)
-	}
-
-	if IsKeyword(term) {
-		vmap, isMap := value.(map[string]interface{})
-		var hasAllowedKeysOnly = true
-		for k := range vmap {
-			if k != "@container" && k != "@protected" {
-				hasAllowedKeysOnly = false
-				break
-			}
-		}
-		isSet := isMap && (vmap["@container"] == "@set" || vmap["@container"] == nil)
-		if c.processingMode(1.1) && term == "@type" && hasAllowedKeysOnly && isSet {
-			// this is the only case were redefining a keyword is allowed
-		} else {
-			return NewJsonLdError(KeywordRedefinition, term)
-		}
-	} else if ignoredKeywordPattern.MatchString(term) {
-		//log.Printf("Terms beginning with '@' are reserved for future use and ignored: %s.", term)
-		return nil
 	}
 
 	// keep reference to previous mapping for potential `@protected` check
@@ -864,7 +887,7 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 
 		definition.ID = id
 		definition.Reverse = true
-	} else if idValue, hasID := val["@id"]; hasID { // 13)
+	} else if idValue, hasID := val["@id"]; hasID && !nullID { // 13)
 		idStr, isString := idValue.(string)
 		if !isString {
 			return NewJsonLdError(InvalidIRIMapping, "expected value of @id to be a string")
@@ -926,7 +949,7 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 		// 14)
 	}
 
-	if definition.ID == "" {
+	if definition.ID == "" && !nullID {
 		if termHasColon {
 			prefix := term[0:colIndex]
 			if _, containsPrefix := context[prefix]; containsPrefix {
@@ -1189,12 +1212,21 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 		definition.Nest = nest
 	}
 
+	if nullID {
+		return c.defineNullTerm(term, mapValue, prevDefinition, defined, overrideProtected)
+	}
+
 	// disallow aliasing @context and @preserve
 	if id := definition.ID; id == "@context" || id == "@preserve" {
 		return NewJsonLdError(InvalidKeywordAlias, "@context and @preserve cannot be aliased")
 	}
 
-	// Check for overriding protected terms
+	// Check for overriding protected terms. A protected null mapping
+	// differs from any definition with an IRI mapping.
+	if c.protectedNull[term] && !overrideProtected {
+		return NewJsonLdError(ProtectedTermRedefinition, "invalid JSON-LD syntax; tried to redefine a protected term")
+	}
+	delete(c.protectedNull, term)
 	if prevDefinition != nil {
 		if protectedVal := prevDefinition.Protected; protectedVal && !overrideProtected {
 			// force new term to continue to be protected and see if the mappings would be equal
@@ -1212,6 +1244,42 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 	// 18)
 	c.TermDefinitions[term] = definition
 
+	return nil
+}
+
+// defineNullTerm stores a term whose IRI mapping is null (JSON-LD 1.1 API
+// §4.2.2 step 14.1). The term stays nil in TermDefinitions, so its protection
+// is kept in protectedNull for the step 27 check on a later redefinition.
+func (c *Context) defineNullTerm(term string, mapValue map[string]interface{}, prev *TermDefinition,
+	defined map[string]bool, overrideProtected bool) error {
+	protectTerm := defined["@protected"]
+	if valProtected, protectedFound := mapValue["@protected"]; protectedFound {
+		protectedBool, isBool := valProtected.(bool)
+		if !isBool {
+			return NewJsonLdError(InvalidProtectedValue, "@protected must be a boolean")
+		}
+		protectTerm = protectedBool
+	}
+
+	if !overrideProtected {
+		if prev != nil && prev.Protected {
+			return NewJsonLdError(ProtectedTermRedefinition, "invalid JSON-LD syntax; tried to redefine a protected term")
+		}
+		// An identical redefinition keeps the term protected.
+		protectTerm = protectTerm || c.protectedNull[term]
+	}
+
+	c.TermDefinitions[term] = nil
+	if protectTerm {
+		if c.protectedNull == nil {
+			c.protectedNull = make(map[string]bool)
+		}
+		c.protectedNull[term] = true
+		c.Protected[term] = true
+	} else {
+		delete(c.protectedNull, term)
+	}
+	defined[term] = true
 	return nil
 }
 
