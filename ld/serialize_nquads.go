@@ -143,7 +143,12 @@ func escapeLiteral(str string) string {
 			b.WriteString(`\t`)
 		default:
 			if r <= 0x1F || r == 0x7F {
-				fmt.Fprintf(&b, `\u%04X`, r)
+				const hex = "0123456789ABCDEF"
+				b.WriteString(`\u`)
+				b.WriteByte(hex[r>>12&0xF])
+				b.WriteByte(hex[r>>8&0xF])
+				b.WriteByte(hex[r>>4&0xF])
+				b.WriteByte(hex[r&0xF])
 			} else {
 				b.WriteRune(r)
 			}
