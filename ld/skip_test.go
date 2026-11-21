@@ -8,8 +8,6 @@ var skippedTests = map[string][]string{
 	"testdata/compact-manifest.jsonld": {
 		"#tp001", // json-ld-1.0 processing mode is not supported
 		"#t0111", // TODO
-		"#t0112", // TODO
-		"#t0113", // TODO
 		"#tin",   // TODO
 	},
 	"testdata/expand-manifest.jsonld": {

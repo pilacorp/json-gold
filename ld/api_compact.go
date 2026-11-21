@@ -479,9 +479,18 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 							indexKey = td.Index
 						}
 
-						containerKey, err := activeCtx.CompactIri(indexKey, nil, true, false)
-						if err != nil {
+						// The index mapping keeps the @index value as written. A term
+						// ("predicate") or compact IRI ("ex:name") is already in
+						// compact form; compacting "ex:name" again would raise "IRI
+						// confused with prefix" (test compact #t0112). Only an
+						// absolute IRI is compacted (#t0113).
+						containerKey := indexKey
+						if expanded, err := activeCtx.ExpandIri(indexKey, false, true, nil, nil); err != nil {
 							return nil, err
+						} else if expanded == indexKey {
+							if containerKey, err = activeCtx.CompactIri(indexKey, nil, true, false); err != nil {
+								return nil, err
+							}
 						}
 
 						if indexKey == "@index" {
@@ -490,10 +499,12 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 								delete(compactedItemMap, containerKey)
 							}
 						} else {
+							// §6.1.2 (@index container with an index key): the property is read under its
+							// compacted name, e.g. "ex:name" for http://example.org/ns/name.
 							var propsArray []interface{}
 							compactedItemMap, isMap := compactedItem.(map[string]interface{})
 							if isMap {
-								props, found := compactedItemMap[indexKey]
+								props, found := compactedItemMap[containerKey]
 								if found {
 									propsArray = Arrayify(props)
 								} else {
@@ -513,11 +524,11 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 							} else {
 								switch len(others) {
 								case 0:
-									delete(compactedItemMap, indexKey)
+									delete(compactedItemMap, containerKey)
 								case 1:
-									compactedItemMap[indexKey] = others[0]
+									compactedItemMap[containerKey] = others[0]
 								default:
-									compactedItemMap[indexKey] = others
+									compactedItemMap[containerKey] = others
 								}
 							}
 						}
