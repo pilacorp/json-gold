@@ -17,11 +17,11 @@ func TestParseNQuadsKeepsBackslashBeforeEscapeLetter(t *testing.T) {
 		t.Fatalf("parsed %q, want %q", got, want)
 	}
 
-	real, err := ParseNQuads("<urn:s:1> <https://ex.org/n> \"a\\nb\" .\n")
+	newline, err := ParseNQuads("<urn:s:1> <https://ex.org/n> \"a\\nb\" .\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := real.Graphs["@default"][0].Object.(Literal).Value; got != "a\nb" {
+	if got := newline.Graphs["@default"][0].Object.(Literal).Value; got != "a\nb" {
 		t.Fatalf("real newline escape parsed %q", got)
 	}
 }
