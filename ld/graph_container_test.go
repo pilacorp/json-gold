@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // A VCDM presentation defines verifiableCredential with @container @graph and
@@ -106,6 +109,53 @@ func TestGraphContainerListValueIsDropped(t *testing.T) {
 		"g": {"@list": ["a"]}
 	}`
 	assertNQuads(t, doc, "<urn:ex:1> <https://example.org/g> _:b0 .\n")
+}
+
+// JSON-LD 1.1 API §5.1.2 step 13.4.5 expands a @graph value with @graph as
+// active property, which drops a scalar or value object (steps 4.1 and 19),
+// and ensures an array of maps. Nothing is left, so the graph is empty: it
+// keeps its link triple and every API handles it alike.
+func TestGraphKeywordWithOnlyScalarIsEmpty(t *testing.T) {
+	for _, value := range []string{`"x"`, `{"@value":"x"}`, `{}`, `null`, `["x"]`} {
+		doc := `{"@id":"urn:s","http://ex.org/p":{"@graph":` + value + `}}`
+		t.Run(value, func(t *testing.T) {
+			var in interface{}
+			require.NoError(t, json.Unmarshal([]byte(doc), &in))
+			p := NewJsonLdProcessor()
+			expanded, err := p.Expand(in, NewJsonLdOptions(""))
+			require.NoError(t, err)
+			assert.Equal(t, []interface{}{map[string]interface{}{
+				"@id":             "urn:s",
+				"http://ex.org/p": []interface{}{map[string]interface{}{"@graph": []interface{}{}}},
+			}}, expanded)
+			_, err = p.Flatten(in, nil, NewJsonLdOptions(""))
+			require.NoError(t, err)
+			_, err = p.Frame(in, map[string]interface{}{}, NewJsonLdOptions(""))
+			require.NoError(t, err)
+			assertNQuads(t, doc, "<urn:s> <http://ex.org/p> _:b0 .\n")
+		})
+	}
+}
+
+// Framing 1.1 §4.1 takes the first @graph entry of a frame as the
+// sub-frame, or an empty map when there is none, so an empty or dropped
+// @graph frames like a wildcard.
+func TestFrameWithEmptyGraphIsWildcard(t *testing.T) {
+	var in interface{}
+	require.NoError(t, json.Unmarshal([]byte(`{"@id":"urn:s","http://ex.org/p":{"@graph":{"@id":"urn:a","http://ex.org/q":"x"}}}`), &in))
+	var wildcard interface{}
+	require.NoError(t, json.Unmarshal([]byte(`{"http://ex.org/p":{"@graph":{}}}`), &wildcard))
+	want, err := NewJsonLdProcessor().Frame(in, wildcard, NewJsonLdOptions(""))
+	require.NoError(t, err)
+	for _, f := range []string{`{"http://ex.org/p":{"@graph":[]}}`, `{"http://ex.org/p":{"@graph":["x"]}}`} {
+		t.Run(f, func(t *testing.T) {
+			var frame interface{}
+			require.NoError(t, json.Unmarshal([]byte(f), &frame))
+			got, err := NewJsonLdProcessor().Frame(in, frame, NewJsonLdOptions(""))
+			require.NoError(t, err)
+			assert.Equal(t, want, got)
+		})
+	}
 }
 
 func assertNQuads(t *testing.T, doc, want string) {

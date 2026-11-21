@@ -575,6 +575,11 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 				if err != nil {
 					return err
 				}
+				// A dropped scalar or value object leaves no map, so the
+				// array of maps the step asks for is empty, not [null].
+				if expandedValue == nil {
+					expandedValue = []interface{}{}
+				}
 				expandedValue = Arrayify(expandedValue)
 			} else if expandedProperty == "@value" { // 7.4.6)
 				if inputType == "@json" && activeCtx.processingMode(1.1) {

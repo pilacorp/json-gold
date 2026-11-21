@@ -332,10 +332,11 @@ func (api *JsonLdApi) matchFrame(state *FramingContext, subjects []string,
 				// 4.5.2
 				// Otherwise, set subframe to the first entry for @graph in frame, or a new empty map,
 				// if it does not exist, and set recurse to true, unless id is @merged or @default.
-				if v, isMap := frame["@graph"].([]interface{})[0].(map[string]interface{}); isMap {
-					subframe = v
-				} else {
-					subframe = make(map[string]interface{})
+				subframe = make(map[string]interface{})
+				if graphFrames, _ := frame["@graph"].([]interface{}); len(graphFrames) > 0 {
+					if v, isMap := graphFrames[0].(map[string]interface{}); isMap {
+						subframe = v
+					}
 				}
 				recurse = !(id == "@merged" || id == "@default")
 			}
