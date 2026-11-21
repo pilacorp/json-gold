@@ -87,7 +87,7 @@ func toNQuad(triple *Quad, graphName string) string {
 		q += o.GetValue()
 	} else {
 		literal := o.(Literal)
-		escaped := escape(literal.GetValue())
+		escaped := escapeLiteral(literal.GetValue())
 		q += "\"" + escaped + "\""
 		if literal.Datatype == RDFLangString {
 			q += "@" + literal.Language
@@ -117,6 +117,45 @@ func escape(str string) string {
 	str = strings.ReplaceAll(str, "\r", "\\r")
 	str = strings.ReplaceAll(str, "\t", "\\t")
 	return str
+}
+
+// escapeLiteral writes a literal in the canonical N-Quads form of
+// RDFC-1.0 Appendix A. Named escapes cover the five controls plus quote
+// and backslash. The other C0 controls, DEL, and U+FFFE and U+FFFF (outside
+// the XML 1.1 Char production) are \uXXXX with uppercase hex.
+func escapeLiteral(str string) string {
+	var b strings.Builder
+	b.Grow(len(str))
+	for _, r := range str {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\b':
+			b.WriteString(`\b`)
+		case '\f':
+			b.WriteString(`\f`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if r <= 0x1F || r == 0x7F || r == 0xFFFE || r == 0xFFFF {
+				const hex = "0123456789ABCDEF"
+				b.WriteString(`\u`)
+				b.WriteByte(hex[r>>12&0xF])
+				b.WriteByte(hex[r>>8&0xF])
+				b.WriteByte(hex[r>>4&0xF])
+				b.WriteByte(hex[r&0xF])
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return b.String()
 }
 
 type lineScanner interface {

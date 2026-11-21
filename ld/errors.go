@@ -38,6 +38,7 @@ const (
 	LoadingRemoteContextFailed  ErrorCode = "loading remote context failed"
 	InvalidRemoteContext        ErrorCode = "invalid remote context"
 	RecursiveContextInclusion   ErrorCode = "recursive context inclusion"
+	ContextOverflow             ErrorCode = "context overflow"
 	InvalidBaseIRI              ErrorCode = "invalid base IRI"
 	InvalidVocabMapping         ErrorCode = "invalid vocab mapping"
 	InvalidDefaultLanguage      ErrorCode = "invalid default language"
@@ -69,13 +70,16 @@ const (
 	InvalidPrefixValue          ErrorCode = "invalid @prefix value"
 	InvalidNestValue            ErrorCode = "invalid @nest value"
 	InvalidContextNullification ErrorCode = "invalid context nullification"
+	InvalidScopedContext        ErrorCode = "invalid scoped context"
 	ProtectedTermRedefinition   ErrorCode = "protected term redefinition"
+	InvalidProtectedValue       ErrorCode = "invalid @protected value"
 	InvalidContextEntry         ErrorCode = "invalid context entry"
 	InvalidPropagateValue       ErrorCode = "invalid @propagate value"
 	InvalidBaseDirection        ErrorCode = "invalid base direction"
 	InvalidIncludedValue        ErrorCode = "invalid @included value"
 	InvalidImportValue          ErrorCode = "invalid @import value"
 	IRIConfusedWithPrefix       ErrorCode = "IRI confused with prefix"
+	InvalidJsonLiteral          ErrorCode = "invalid JSON literal"
 
 	// non spec related errors
 	SyntaxError     ErrorCode = "syntax error"
@@ -85,7 +89,10 @@ const (
 	ParseError      ErrorCode = "parse error"
 	IOError         ErrorCode = "io error"
 	InvalidProperty ErrorCode = "invalid property"
-	UnknownError    ErrorCode = "unknown error"
+	// InvalidRdfTerm is raised in safe mode when a statement would be left
+	// out of the dataset for an IRI or language tag that is not well-formed.
+	InvalidRdfTerm ErrorCode = "invalid RDF term"
+	UnknownError   ErrorCode = "unknown error"
 )
 
 func (e JsonLdError) Error() string {

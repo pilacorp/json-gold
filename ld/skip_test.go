@@ -6,93 +6,28 @@ package ld_test
 // Structure: <relative path to manifest file> ==> list of test ID prefixes to skip
 var skippedTests = map[string][]string{
 	"testdata/compact-manifest.jsonld": {
-		"#t0111", // TODO
-		"#t0112", // TODO
-		"#t0113", // TODO
-		"#tin",   // TODO
-		"#tm023", // TODO
-		"#tp001", // TODO
+		"#tp001", // json-ld-1.0 processing mode is not supported
 	},
-	"testdata/expand-manifest.jsonld": {
-		"#t0122", // TODO
-		"#t0123", // TODO
-		"#tc032", // TODO
-		"#tc033", // TODO
-		"#tc037", // TODO: New test
-		"#tc038", // TODO: New test
-		"#tec02", // TODO
-		"#ter52", // TODO
-		"#ter54", // TODO: New test
-		"#ter56", // TODO: New test
-		"#tpr28", // TODO: New test
-		"#tpr38", // TODO: New test
-		"#tpr39", // TODO: New test
-		"#tpr43", // TODO: New test
-	},
+	"testdata/expand-manifest.jsonld":  {},
 	"testdata/flatten-manifest.jsonld": {},
 	"testdata/fromRdf-manifest.jsonld": {
-		"#t0027", // TODO: New test
-		"#tdi05", // No support for i18n-datatype yet
-		"#tdi06", // No support for i18n-datatype yet
-		"#tdi11", // No support for compound-literal yet
-		"#tdi12", // No support for compound-literal yet
-		"#tjs",   // @json not yet supported
+		"#tdi05", // No support for the rdfDirection option (i18n-datatype)
+		"#tdi06", // No support for the rdfDirection option (i18n-datatype)
+		"#tdi11", // No support for the rdfDirection option (compound-literal)
+		"#tdi12", // No support for the rdfDirection option (compound-literal)
 	},
 	"testdata/remote-doc-manifest.jsonld": {
 		"#t0013", // HTML documents aren't supported yet
 	},
 	"testdata/toRdf-manifest.jsonld": {
-		"#tc032", // TODO
-		"#tc033", // TODO
-		"#tc037", // TODO: New test
-		"#tc038", // TODO: New test
-		"#tdi09", // No support for i18n-datatype yet
-		"#tdi10", // No support for i18n-datatype yet
-		"#tdi11", // No support for compound-literal yet
-		"#tdi12", // No support for compound-literal yet
-		"#te075", // No support for GeneralizedRdf
-		"#te085", // test passes, bug in isomorphism check
-		"#te086", // test passes, bug in isomorphism check
-		"#te087", // test passes, bug in isomorphism check
-		"#te111", // TODO
-		"#te112", // TODO
-		"#te123", // TODO: new test
-		"#tec02", // TODO: new test
-		"#ter52", // TODO: new test
-		"#ter54", // TODO: new test
-		"#ter56", // TODO: new test
-		"#tjs03", // TODO numeric format
-		"#tjs07",
-		"#tjs08",
-		"#tjs14",
-		"#tjs15",
-		"#tjs16",
-		"#tjs17",
-		"#tjs18",
-		"#tjs21",
-		"#tjs22",
-		"#tjs23",
-		"#tli11", // TODO: New test
-		"#tli12", // TODO: New test
-		"#tli14", // TODO: New test
-		"#tpr28", // Skipped in Expand test suite
-		"#tpr38", // TODO
-		"#tpr39", // TODO
-		"#tpr43", // TODO: New test
-		"#ttn02", // TODO
+		"#tdi09", // No support for the rdfDirection option (i18n-datatype)
+		"#tdi10", // No support for the rdfDirection option (i18n-datatype)
+		"#tdi11", // No support for the rdfDirection option (compound-literal)
+		"#tdi12", // No support for the rdfDirection option (compound-literal)
+		"#te075", // No support for produceGeneralizedRdf
 	},
 	"testdata/html-manifest.jsonld": {
 		"#t", // HTML inputs not supported yet
 	},
-	"testdata/frame-manifest.jsonld": {
-		"#t0064", // @type with @default value in frame requires expansion changes
-		"#t0069", // @json not yet supported
-		"#tin",   // More involved, with @included to pass current subjects instead of frame keys
-	},
-	"testdata/normalization/manifest-urgna2012.jsonld": {
-		"manifest-urgna2012#test060",
-	},
-	"testdata/normalization/manifest-urdna2015.jsonld": {
-		"manifest-urdna2015#test060",
-	},
+	"testdata/frame-manifest.jsonld": {},
 }

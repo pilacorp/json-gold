@@ -106,6 +106,9 @@ func (api *JsonLdApi) Frame(input interface{}, frame []interface{}, opts *JsonLd
 	if err := validateFrame(frame); err != nil {
 		return nil, nil, err
 	}
+	if err := validateSubframes(frame); err != nil {
+		return nil, nil, err
+	}
 
 	// 1.
 	// If frame is an array, set frame to the first member of the array.
@@ -143,6 +146,7 @@ func createsCircularReference(id string, graph string, state *FramingContext) bo
 
 func (api *JsonLdApi) mergeNodeMapGraphs(graphs map[string]interface{}) map[string]interface{} {
 	merged := make(map[string]interface{})
+	nv := newNodeValues()
 
 	for _, name := range GetOrderedKeys(graphs) {
 		graph := graphs[name].(map[string]interface{})
@@ -163,7 +167,7 @@ func (api *JsonLdApi) mergeNodeMapGraphs(graphs map[string]interface{}) map[stri
 					if property == "@type" {
 						// merge @type arrays across graphs instead of overwriting
 						for _, v := range Arrayify(node[property]) {
-							AddValue(mergedNode, property, CloneDocument(v), true, false, false, false)
+							nv.add(mergedNode, property, CloneDocument(v))
 						}
 					} else {
 						// copy other keywords
@@ -172,7 +176,7 @@ func (api *JsonLdApi) mergeNodeMapGraphs(graphs map[string]interface{}) map[stri
 				} else {
 					// merge objects
 					for _, v := range node[property].([]interface{}) {
-						AddValue(mergedNode, property, CloneDocument(v), true, false, false, false)
+						nv.add(mergedNode, property, CloneDocument(v))
 					}
 				}
 			}
@@ -328,10 +332,11 @@ func (api *JsonLdApi) matchFrame(state *FramingContext, subjects []string,
 				// 4.5.2
 				// Otherwise, set subframe to the first entry for @graph in frame, or a new empty map,
 				// if it does not exist, and set recurse to true, unless id is @merged or @default.
-				if v, isMap := frame["@graph"].([]interface{})[0].(map[string]interface{}); isMap {
-					subframe = v
-				} else {
-					subframe = make(map[string]interface{})
+				subframe = make(map[string]interface{})
+				if graphFrames, _ := frame["@graph"].([]interface{}); len(graphFrames) > 0 {
+					if v, isMap := graphFrames[0].(map[string]interface{}); isMap {
+						subframe = v
+					}
 				}
 				recurse = !(id == "@merged" || id == "@default")
 			}
@@ -369,27 +374,24 @@ func (api *JsonLdApi) matchFrame(state *FramingContext, subjects []string,
 
 		// 4.6
 		// If frame has an @included entry, invoke the algorithm using a copy of state with the
-		// value of embedded flag set to false, subjects, frame, output as parent,
-		// and @included as active property.
-		// FIXME: The specification is syntactically incomplete.
-		//        Below implementation reads as if "set to false, included as subjects"
-		if _, hasIncluded := frame["@included"]; hasIncluded {
-			var included = Arrayify(frame["@included"])
-
-			for _, i := range included {
-				stateEmbedded := state.embedded
-				state.embedded = false
-				includeMap, ok := i.(map[string]interface{})
-				if !ok {
-					return nil, fmt.Errorf("expected map[string]interface{} in @included, got %T", i)
-				}
-				includeSubjects := GetOrderedKeys(includeMap)
-				if _, err = api.matchFrame(state, includeSubjects, frame, output, "@included"); err != nil {
-					return nil, err
-				}
-				// reset to current graph
-				state.embedded = stateEmbedded
+		// value of embedded flag set to false, subjects, the @included sub-frame,
+		// output as parent, and @included as active property. The spec text says
+		// "frame"; the sub-frame is what tests #tin01-03 and jsonld.js use.
+		if includedVal, hasIncluded := frame["@included"]; hasIncluded {
+			var includedFrame map[string]interface{}
+			ok := false
+			if frames := Arrayify(includedVal); len(frames) > 0 {
+				includedFrame, ok = frames[0].(map[string]interface{})
 			}
+			if !ok {
+				return nil, NewJsonLdError(InvalidFrame, "@included in a frame must be a node object")
+			}
+			stateEmbedded := state.embedded
+			state.embedded = false
+			if _, err = api.matchFrame(state, subjects, includedFrame, output, "@included"); err != nil {
+				return nil, err
+			}
+			state.embedded = stateEmbedded
 		}
 
 		// 4.7
@@ -514,8 +516,25 @@ func (api *JsonLdApi) matchFrame(state *FramingContext, subjects []string,
 		// For each non-keyword property and objects in frame (other than `@type) that is not in output:
 		// handle defaults
 		for _, prop := range GetOrderedKeys(frame) {
-			// skip keywords
-			// TODO: Unless it's @type ?
+			if prop == "@type" {
+				// A default object in @type gives a node with no @type its
+				// default type (Framing §4.1 step 4.7.4, test #t0064). The
+				// IRI goes in as is: @type values are compacted as IRIs.
+				if _, hasType := output["@type"]; hasType {
+					continue
+				}
+				frameTypes, _ := frame["@type"].([]interface{})
+				if len(frameTypes) > 0 {
+					if defaultObj, isMap := frameTypes[0].(map[string]interface{}); isMap {
+						defaultIRI, isString := defaultObj["@default"].(string)
+						if isString && !GetFrameFlag(defaultObj, "@omitDefault", state.omitDefault) {
+							output["@type"] = []interface{}{defaultIRI}
+						}
+					}
+				}
+				continue
+			}
+			// skip other keywords
 			if IsKeyword(prop) {
 				continue
 			}
@@ -626,7 +645,9 @@ func validateFrame(frame interface{}) error {
 			if _, isMap := idVal.(map[string]interface{}); isMap {
 				continue
 			}
-			if strings.HasPrefix(idVal.(string), "_:") {
+			// Framing §4.1: the @id of a frame must be IRIs. A keyword-like
+			// @id has expanded to null, which is not one.
+			if s, isString := idVal.(string); !isString || !IsAbsoluteIri(s) || strings.HasPrefix(s, "_:") {
 				return NewJsonLdError(InvalidFrame,
 					fmt.Sprintf("Invalid JSON-LD frame syntax; invalid value of @id: %v", id))
 			}
@@ -638,13 +659,52 @@ func validateFrame(frame interface{}) error {
 			if _, isMap := typeVal.(map[string]interface{}); isMap {
 				continue
 			}
-			if strings.HasPrefix(typeVal.(string), "_:") {
+			s, isString := typeVal.(string)
+			if !isString || (!IsAbsoluteIri(s) && s != "@json") || strings.HasPrefix(s, "_:") {
 				return NewJsonLdError(InvalidFrame,
 					fmt.Sprintf("Invalid JSON-LD frame syntax; invalid value of @type: %v", t))
 			}
 		}
 	}
 
+	return nil
+}
+
+// frameValueKeys hold flags, patterns and defaults, not frames.
+var frameValueKeys = map[string]bool{
+	"@id": true, "@type": true, "@default": true, "@embed": true, "@explicit": true,
+	"@omitDefault": true, "@requireAll": true, "@value": true, "@language": true,
+	"@direction": true, "@index": true,
+}
+
+// validateSubframes applies the frame object rules of Framing §4.1 to every
+// frame nested under a property, @graph, @reverse, @list or @included, so a
+// sub-frame is checked even when no node reaches it.
+func validateSubframes(frame interface{}) error {
+	switch v := frame.(type) {
+	case []interface{}:
+		for _, item := range v {
+			if err := validateSubframes(item); err != nil {
+				return err
+			}
+		}
+	case map[string]interface{}:
+		for key, value := range v {
+			if frameValueKeys[key] {
+				continue
+			}
+			for _, item := range Arrayify(value) {
+				if sub, isMap := item.(map[string]interface{}); isMap {
+					if err := validateFrame(sub); err != nil {
+						return err
+					}
+					if err := validateSubframes(sub); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
 	return nil
 }
 
@@ -900,6 +960,9 @@ func FilterSubject(state *FramingContext, subject map[string]interface{}, frame 
 					frameType := frame["@type"].([]interface{})
 					if isEmptyObject(frameType[0]) {
 						matchThis = len(nodeValues) > 0
+					} else if _, isDefault := frameType[0].(map[string]interface{}); isDefault {
+						// Framing §4.3: a default object in @type matches any node.
+						matchThis = true
 					} else {
 						// match on a specific @type
 						r := make([]interface{}, 0)

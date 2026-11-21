@@ -8,11 +8,11 @@
   "sequence": [
     {
       "@id": "#ext0001",
-      "@type": ["jld:PositiveEvaluationTest", "jld:ExpandTest"],
-      "name": "resolve nested contexts #76",
-      "purpose": "Ensure nested contexts are dereferenced",
+      "@type": ["jld:NegativeEvaluationTest", "jld:ExpandTest"],
+      "name": "nested @context in a local context is rejected (#76)",
+      "purpose": "JSON-LD 1.1 API 4.1.2 step 5.13 makes @context a term to define, a keyword redefinition, as in expand #ter56",
       "input": "extra/0001-in.jsonld",
-      "expect": "extra/0001-out.jsonld"
+      "expectErrorCode": "keyword redefinition"
     }
   ]
 }

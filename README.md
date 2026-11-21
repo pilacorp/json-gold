@@ -1,8 +1,7 @@
 # JSON-goLD
 
-[![GoDoc](https://godoc.org/github.com/pilacorp/json-gold?status.svg)](https://pkg.go.dev/github.com/pilacorp/json-gold)
-[![ci](https://github.com/piprate/json-gold/actions/workflows/ci.yml/badge.svg)](https://github.com/piprate/json-gold/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/piprate/json-gold/branch/master/graph/badge.svg?token=JvEEDMmppm)](https://codecov.io/gh/piprate/json-gold)
+[![GoDoc](https://pkg.go.dev/badge/github.com/pilacorp/json-gold.svg)](https://pkg.go.dev/github.com/pilacorp/json-gold)
+[![ci](https://github.com/pilacorp/json-gold/actions/workflows/ci.yml/badge.svg)](https://github.com/pilacorp/json-gold/actions/workflows/ci.yml)
 
 This is the Pila fork of [piprate/json-gold](https://github.com/piprate/json-gold),
 published under its own module path so that projects depending on it get the

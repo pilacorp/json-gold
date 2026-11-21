@@ -50,7 +50,7 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 
 	// use any scoped context on activeProperty
 	if td := activeCtx.GetTermDefinition(activeProperty); td != nil && td.HasContext {
-		newCtx, err := activeCtx.parse(td.Context, make([]string, 0), false, true, false, true)
+		newCtx, err := activeCtx.parse(td.Context, td.BaseURL, nil, false, true, false, true)
 		if err != nil {
 			return nil, err
 		}
@@ -98,7 +98,7 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 
 		// apply property-scoped context after reverting term-scoped context
 		if td := inputCtx.GetTermDefinition(activeProperty); td != nil && td.Context != nil {
-			newCtx, err := activeCtx.parse(td.Context, nil, false, true, false, true)
+			newCtx, err := activeCtx.parse(td.Context, td.BaseURL, nil, false, true, false, true)
 			if err != nil {
 				return nil, err
 			}
@@ -125,7 +125,7 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 			sort.Strings(types)
 			for _, tt := range types {
 				if td := inputCtx.GetTermDefinition(tt); td != nil && td.HasContext {
-					newCtx, err := activeCtx.parse(td.Context, nil, false, false, false, false)
+					newCtx, err := activeCtx.parse(td.Context, td.BaseURL, nil, false, false, false, false)
 					if err != nil {
 						return nil, err
 					}
@@ -150,6 +150,10 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 				compactedValues := make([]interface{}, 0)
 
 				for _, v := range Arrayify(expandedValue) {
+					if v == nil { // keyword-like @id, see CompactValue
+						compactedValues = append(compactedValues, nil)
+						continue
+					}
 					cv, err := activeCtx.CompactIri(v.(string), nil, false, false)
 					if err != nil {
 						return nil, err
@@ -203,7 +207,10 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 
 			if expandedProperty == "@reverse" {
 
-				compactedObject, _ := api.Compact(activeCtx, "@reverse", expandedValue, compactArrays)
+				compactedObject, err := api.Compact(activeCtx, "@reverse", expandedValue, compactArrays)
+				if err != nil {
+					return nil, err
+				}
 				compactedValue := compactedObject.(map[string]interface{})
 
 				for _, property := range GetKeys(compactedValue) {
@@ -232,7 +239,10 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 
 			if expandedProperty == "@preserve" {
 				// compact using activeProperty
-				compactedValue, _ := api.Compact(activeCtx, activeProperty, expandedValue, compactArrays)
+				compactedValue, err := api.Compact(activeCtx, activeProperty, expandedValue, compactArrays)
+				if err != nil {
+					return nil, err
+				}
 				if cva, isArray := compactedValue.([]interface{}); !(isArray && len(cva) == 0) {
 					AddValue(result, expandedProperty, compactedValue, false, false, true, false)
 				}
@@ -251,8 +261,10 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 				continue
 			}
 
-			// skip array processing for keywords that aren't @graph or @list
-			if expandedProperty != "@graph" && expandedProperty != "@list" && IsKeyword(expandedProperty) {
+			// skip array processing for keywords that aren't @graph, @list or
+			// @included: §6.1.2 compacts an included block like any property.
+			if expandedProperty != "@graph" && expandedProperty != "@list" && expandedProperty != "@included" &&
+				IsKeyword(expandedProperty) {
 				alias, err := activeCtx.CompactIri(expandedProperty, nil, false, false)
 				if err != nil {
 					return nil, err
@@ -479,9 +491,18 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 							indexKey = td.Index
 						}
 
-						containerKey, err := activeCtx.CompactIri(indexKey, nil, true, false)
-						if err != nil {
+						// The index mapping keeps the @index value as written. A term
+						// ("predicate") or compact IRI ("ex:name") is already in
+						// compact form; compacting "ex:name" again would raise "IRI
+						// confused with prefix" (test compact #t0112). Only an
+						// absolute IRI is compacted (#t0113).
+						containerKey := indexKey
+						if expanded, err := activeCtx.ExpandIri(indexKey, false, true, nil, nil); err != nil {
 							return nil, err
+						} else if expanded == indexKey {
+							if containerKey, err = activeCtx.CompactIri(indexKey, nil, true, false); err != nil {
+								return nil, err
+							}
 						}
 
 						if indexKey == "@index" {
@@ -490,10 +511,12 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 								delete(compactedItemMap, containerKey)
 							}
 						} else {
+							// §6.1.2 (@index container with an index key): the property is read under its
+							// compacted name, e.g. "ex:name" for http://example.org/ns/name.
 							var propsArray []interface{}
 							compactedItemMap, isMap := compactedItem.(map[string]interface{})
 							if isMap {
-								props, found := compactedItemMap[indexKey]
+								props, found := compactedItemMap[containerKey]
 								if found {
 									propsArray = Arrayify(props)
 								} else {
@@ -513,11 +536,11 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 							} else {
 								switch len(others) {
 								case 0:
-									delete(compactedItemMap, indexKey)
+									delete(compactedItemMap, containerKey)
 								case 1:
-									compactedItemMap[indexKey] = others[0]
+									compactedItemMap[containerKey] = others[0]
 								default:
-									compactedItemMap[indexKey] = others
+									compactedItemMap[containerKey] = others
 								}
 							}
 						}
@@ -528,7 +551,9 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 						}
 						compactedItemMap := compactedItem.(map[string]interface{})
 						if compactedItemValue, containsValue := compactedItemMap[idKey]; containsValue {
-							mapKey = compactedItemValue.(string)
+							// A null @id (keyword-like IRI) leaves map key null,
+							// which becomes @none (§6.1.2 step 12.8.9.10).
+							mapKey, _ = compactedItemValue.(string)
 							delete(compactedItemMap, idKey)
 						} else {
 							mapKey = ""
@@ -539,39 +564,37 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 							return nil, err
 						}
 
-						compactedItemMap := compactedItem.(map[string]interface{})
-						var types []interface{}
-						if compactedItemValue, containsValue := compactedItemMap[typeKey]; containsValue {
-							var isArray bool
-							types, isArray = compactedItemValue.([]interface{})
-							if !isArray {
-								types = []interface{}{compactedItemValue}
-							}
-
-							delete(compactedItemMap, typeKey)
+						// §6.1.2: the first type is the map key and the rest
+						// stay on the item. An item compacted to an IRI string
+						// has no types, so it goes under @none.
+						if compactedItemMap, isMap := compactedItem.(map[string]interface{}); isMap {
+							types := Arrayify(compactedItemMap[typeKey])
 							if len(types) > 0 {
-								mapKey = types[0].(string)
+								mapKey, _ = types[0].(string)
 								types = types[1:]
 							}
-						} else {
-							types = make([]interface{}, 0)
-						}
+							switch len(types) {
+							case 0:
+								delete(compactedItemMap, typeKey)
+							case 1:
+								compactedItemMap[typeKey] = types[0]
+							default:
+								compactedItemMap[typeKey] = types
+							}
 
-						// if compactedItem contains a single entry whose key maps to @id, re-compact without @type
-						if len(compactedItemMap) == 1 {
-							if idVal, hasID := expandedItemMap["@id"]; hasID {
-								compactedItem, err = api.Compact(activeCtx, itemActiveProperty,
-									map[string]interface{}{
-										"@id": idVal,
-									}, compactArrays)
-								if err != nil {
-									return nil, err
+							// an item left with only its @id is compacted again
+							// without @type
+							if len(compactedItemMap) == 1 {
+								if idVal, hasID := expandedItemMap["@id"]; hasID {
+									compactedItem, err = api.Compact(activeCtx, itemActiveProperty,
+										map[string]interface{}{
+											"@id": idVal,
+										}, compactArrays)
+									if err != nil {
+										return nil, err
+									}
 								}
 							}
-						}
-
-						if len(types) > 0 {
-							AddValue(compactedItemMap, typeKey, types, false, false, false, false)
 						}
 					}
 
@@ -603,7 +626,11 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 // checkNestProperty ensures that the value of `@nest` in the term definition must
 // either be "@nest", or a term which resolves to "@nest".
 func (api *JsonLdApi) checkNestProperty(activeCtx *Context, nestProperty string) error {
-	if v, _ := activeCtx.ExpandIri(nestProperty, false, true, nil, nil); v != "@nest" {
+	v, err := activeCtx.ExpandIri(nestProperty, false, true, nil, nil)
+	if err != nil {
+		return err
+	}
+	if v != "@nest" {
 		return NewJsonLdError(InvalidNestValue, "nested property must have an @nest value resolving to @nest")
 	}
 	return nil

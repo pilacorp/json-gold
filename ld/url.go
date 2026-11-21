@@ -234,45 +234,158 @@ func RemoveBase(baseobj interface{}, iri string) string {
 	return rval
 }
 
-// Resolve the given path against the given base URI.
-// Returns a full URI.
+// Resolve resolves the reference pathToResolve against baseURI as RFC 3986
+// §5.2 specifies. It works on the strings, so it neither percent-encodes nor
+// normalizes an IRI, and it handles bases with no authority such as DIDs and
+// URNs. An empty base, or a base or reference that net/url cannot parse,
+// returns pathToResolve unchanged for the caller to reject.
 func Resolve(baseURI string, pathToResolve string) string {
 	if baseURI == "" {
 		return pathToResolve
 	}
-	if pathToResolve == "" || strings.TrimSpace(pathToResolve) == "" {
-		return baseURI
+	if _, err := url.Parse(baseURI); err != nil {
+		return pathToResolve
 	}
-
-	uri, err := url.Parse(baseURI)
-	if err != nil {
-		// The base cannot be parsed, so there is nothing to resolve against.
-		// This is the same situation as an empty base, handled above.
+	if _, err := url.Parse(pathToResolve); err != nil {
 		return pathToResolve
 	}
 
-	// query string parsing
-	if strings.HasPrefix(pathToResolve, "?") {
-		// drop fragment from uri if it has one
-		uri.Fragment = ""
-		uri.RawQuery = pathToResolve[1:]
-		return uri.String()
-	}
-
-	pathToResolveURL, err := url.Parse(pathToResolve)
-	if err != nil {
-		// Not a URL reference, so it cannot be resolved. Return it unchanged
-		// and let the caller reject it, rather than dereferencing the nil that
-		// url.Parse returns alongside the error.
+	b := splitURIReference(baseURI)
+	r := splitURIReference(pathToResolve)
+	var t uriReference
+	// §5.2.2
+	switch {
+	case r.hasScheme:
+		// JSON-LD only resolves relative references; an absolute one is kept.
 		return pathToResolve
+	case r.hasAuthority:
+		t.hasAuthority, t.authority = true, r.authority
+		t.path = removeDotSegmentsRFC3986(r.path)
+		t.hasQuery, t.query = r.hasQuery, r.query
+	case r.path == "":
+		t.path = b.path
+		if r.hasQuery {
+			t.hasQuery, t.query = true, r.query
+		} else {
+			t.hasQuery, t.query = b.hasQuery, b.query
+		}
+	default:
+		if strings.HasPrefix(r.path, "/") {
+			t.path = removeDotSegmentsRFC3986(r.path)
+		} else {
+			t.path = removeDotSegmentsRFC3986(mergePaths(b, r.path))
+		}
+		t.hasQuery, t.query = r.hasQuery, r.query
 	}
+	if !r.hasAuthority {
+		t.hasAuthority, t.authority = b.hasAuthority, b.authority
+	}
+	t.hasScheme, t.scheme = b.hasScheme, b.scheme
+	t.hasFragment, t.fragment = r.hasFragment, r.fragment
+	return t.String()
+}
 
-	uri = uri.ResolveReference(pathToResolveURL)
-	// java doesn't discard unnecessary dot segments
-	if uri.Path != "" {
-		uri.Path = removeDotSegments(uri.Path, true)
+// uriReference holds the five components of RFC 3986 §3. A component can be
+// present and empty, as in "http://a/b?", so each optional one has a flag.
+type uriReference struct {
+	scheme, authority, path, query, fragment       string
+	hasScheme, hasAuthority, hasQuery, hasFragment bool
+}
+
+// uriReferencePattern is the RFC 3986 Appendix B regular expression.
+var uriReferencePattern = regexp.MustCompile(`^(([^:/?#]+):)?(//([^/?#]*))?([^?#]*)(\?([^#]*))?(#(.*))?$`)
+
+func splitURIReference(ref string) uriReference {
+	m := uriReferencePattern.FindStringSubmatchIndex(ref)
+	part := func(group int) (string, bool) {
+		if m[2*group] < 0 {
+			return "", false
+		}
+		return ref[m[2*group]:m[2*group+1]], true
 	}
-	return uri.String()
+	var u uriReference
+	u.scheme, u.hasScheme = part(2)
+	u.authority, u.hasAuthority = part(4)
+	u.path, _ = part(5)
+	u.query, u.hasQuery = part(7)
+	u.fragment, u.hasFragment = part(9)
+	return u
+}
+
+// String recomposes the reference as RFC 3986 §5.3 does.
+func (u uriReference) String() string {
+	var sb strings.Builder
+	if u.hasScheme {
+		sb.WriteString(u.scheme)
+		sb.WriteByte(':')
+	}
+	if u.hasAuthority {
+		sb.WriteString("//")
+		sb.WriteString(u.authority)
+	}
+	sb.WriteString(u.path)
+	if u.hasQuery {
+		sb.WriteByte('?')
+		sb.WriteString(u.query)
+	}
+	if u.hasFragment {
+		sb.WriteByte('#')
+		sb.WriteString(u.fragment)
+	}
+	return sb.String()
+}
+
+// mergePaths is RFC 3986 §5.2.3.
+func mergePaths(base uriReference, refPath string) string {
+	if base.hasAuthority && base.path == "" {
+		return "/" + refPath
+	}
+	return base.path[:strings.LastIndex(base.path, "/")+1] + refPath
+}
+
+// removeDotSegmentsRFC3986 is RFC 3986 §5.2.4. Unlike removeDotSegments it
+// keeps empty segments, so "a//b" stays as it is.
+func removeDotSegmentsRFC3986(path string) string {
+	var out strings.Builder
+	in := path
+	for in != "" {
+		switch {
+		case strings.HasPrefix(in, "../"):
+			in = in[3:]
+		case strings.HasPrefix(in, "./"):
+			in = in[2:]
+		case strings.HasPrefix(in, "/./"):
+			in = in[2:]
+		case in == "/.":
+			in = "/"
+		case strings.HasPrefix(in, "/../"):
+			in = in[3:]
+			dropLastSegment(&out)
+		case in == "/..":
+			in = "/"
+			dropLastSegment(&out)
+		case in == "." || in == "..":
+			in = ""
+		default:
+			next := strings.IndexByte(in[1:], '/')
+			if next < 0 {
+				out.WriteString(in)
+				in = ""
+			} else {
+				out.WriteString(in[:next+1])
+				in = in[next+1:]
+			}
+		}
+	}
+	return out.String()
+}
+
+// dropLastSegment removes the last segment of out and the "/" before it.
+func dropLastSegment(out *strings.Builder) {
+	s := out.String()
+	s = s[:max(strings.LastIndexByte(s, '/'), 0)]
+	out.Reset()
+	out.WriteString(s)
 }
 
 // parseAuthority parses the authority for the pre-parsed given JsonLdUrl.

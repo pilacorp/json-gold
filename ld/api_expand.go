@@ -97,8 +97,10 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 
 		// Get any property-scoped context for activeProperty
 		var propertyScopedCtx interface{}
+		var propertyScopedBase string
 		if td := activeCtx.GetTermDefinition(activeProperty); td != nil {
 			propertyScopedCtx = td.Context
+			propertyScopedBase = td.BaseURL
 		}
 
 		// second, determine if any type-scoped context should be reverted; it
@@ -137,16 +139,17 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 
 		if propertyScopedCtx != nil {
 			// apply property-scoped context after reverting term-scoped context
-			newCtx, err := activeCtx.parse(propertyScopedCtx, nil, false, true, false, true)
+			newCtx, err := activeCtx.parse(propertyScopedCtx, propertyScopedBase, nil, false, true, false, true)
 			if err != nil {
 				return nil, err
 			}
 			activeCtx = newCtx
 		}
 
-		// if element has a context, process it
+		// if element has a context, process it with the expansion's base
+		// URL, not the base IRI an outer @base may have set (§5.1.2)
 		if hasContext {
-			newCtx, err := activeCtx.Parse(elemCtx)
+			newCtx, err := activeCtx.parse(elemCtx, opts.Base, nil, false, true, false, false)
 			if err != nil {
 				return nil, err
 			}
@@ -193,7 +196,7 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 
 				for _, tt := range types {
 					if td := typeScopedContext.GetTermDefinition(tt); td != nil && td.HasContext {
-						newCtx, err := activeCtx.parse(td.Context, nil, false, false, false, false)
+						newCtx, err := activeCtx.parse(td.Context, td.BaseURL, nil, false, false, false, false)
 						if err != nil {
 							return nil, err
 						}
@@ -254,6 +257,9 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 							"only strings may be language-tagged")
 					}
 				}
+			} else if _, isArray := typeValue.([]interface{}); hasType && isArray && !frameExpansion {
+				// §5.1.2 step 15: a value object's @type must be one IRI.
+				return nil, NewJsonLdError(InvalidTypedValue, "the @type of a value object must be a single IRI")
 			} else if hasType {
 				types := Arrayify(typeValue)
 				if activeCtx.processingMode(1.1) && len(types) == 1 && types[0] == "@json" {
@@ -261,7 +267,9 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 				} else {
 					for _, v := range types {
 						vStr, isString := v.(string)
-						if !(isEmptyObject(v) || (isString && IsAbsoluteIri(vStr) && !strings.HasPrefix(vStr, "_:"))) {
+						// JSON-LD 1.1 API §5.1.2 step 15: the datatype must be an IRI,
+						// which RFC 3987 defines; a blank node identifier is not one.
+						if !(isEmptyObject(v) || (isString && wellFormedIRI(vStr))) {
 							return nil, NewJsonLdError(InvalidTypedValue,
 								"an element containing @value and @type must have an absolute IRI for the value of @type")
 						}
@@ -269,7 +277,11 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 				}
 			}
 		} else if rtype, hasType := resultMap["@type"]; hasType { // 9)
-			if _, isList := rtype.([]interface{}); !isList {
+			if rtype == nil && !frameExpansion {
+				// A keyword-like type names no type: no rdf:type triple.
+				// A frame keeps it for frame validation to reject.
+				delete(resultMap, "@type")
+			} else if _, isList := rtype.([]interface{}); !isList {
 				resultMap["@type"] = []interface{}{rtype}
 			}
 		} else {
@@ -299,6 +311,9 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 		}
 		// 11)
 		if _, hasLanguage := resultMap["@language"]; hasLanguage && len(resultMap) == 1 {
+			if opts != nil && opts.SafeMode && opts.ProcessingMode != JsonLd_1_1_Frame {
+				return nil, NewJsonLdError(InvalidValueObject, "an object with only @language has no value and would be dropped")
+			}
 			resultMap = nil
 		}
 		// 12)
@@ -308,8 +323,14 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 			_, hasList := resultMap["@list"]
 			_, hasID := resultMap["@id"]
 			if resultMap != nil && (len(resultMap) == 0 || hasValue || hasList) {
+				if err := refuseFreeFloating(opts, resultMap); err != nil {
+					return nil, err
+				}
 				resultMap = nil
 			} else if resultMap != nil && !frameExpansion && hasID && len(resultMap) == 1 { // 12.2)
+				if err := refuseFreeFloating(opts, resultMap); err != nil {
+					return nil, err
+				}
 				resultMap = nil
 			}
 		}
@@ -330,14 +351,19 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 		// 2) If element is a scalar
 		// 2.1)
 		if activeProperty == "" || activeProperty == "@graph" {
-			return nil, nil
+			return nil, refuseFreeFloating(opts, element)
 		}
 		return activeCtx.ExpandValue(activeProperty, element)
 	}
 }
 
 func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, expandedActiveProperty string, elem map[string]interface{}, resultMap map[string]interface{}, typeKey string, opts *JsonLdOptions, typeScopedContext *Context, frameExpansion bool, pointer string) error {
-	inputType := elem[typeKey]
+	// typeKey is empty when no key of elem expands to @type. The empty key
+	// cannot be a term, so it never names @type and must not be read here.
+	var inputType interface{}
+	if typeKey != "" {
+		inputType = elem[typeKey]
+	}
 	if inputType != nil {
 		if itArray, isArray := inputType.([]interface{}); isArray {
 			if len(itArray) > 0 {
@@ -406,6 +432,14 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 					if err != nil {
 						return err
 					}
+					// JSON-LD 1.1 API §5.2.2 step 2: an IRI in the form of a
+					// keyword expands to null, and so does this @id.
+					if keywordLike(valueStr) {
+						if err := activeCtx.rejectKeywordLike(InvalidIDValue, valueStr); err != nil {
+							return err
+						}
+						expandedValue = nil
+					}
 				} else if frameExpansion {
 					switch v := value.(type) {
 					case map[string]interface{}:
@@ -469,10 +503,40 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 						if err != nil {
 							return err
 						}
+						// A keyword-like type expands to null (§5.2.2 step 2).
+						// The spec keeps the null in the array. A frame keeps
+						// it so frame validation rejects it; elsewhere it is
+						// dropped so later steps only see IRIs, with the same RDF.
+						if keywordLike(listElemStr) {
+							if err := activeCtx.rejectKeywordLike(InvalidTypeValue, listElemStr); err != nil {
+								return err
+							}
+							if frameExpansion {
+								expandedValueList = append(expandedValueList, nil)
+							}
+							continue
+						}
 						expandedValueList = append(expandedValueList, newVal)
+					}
+					// §5.1.2 step 13.4.4.5: a second key that expands to @type
+					// adds to the types already in result.
+					if containsKey {
+						expandedValueList = append(Arrayify(resultMap[expandedProperty]), expandedValueList...)
 					}
 					expandedValue = expandedValueList
 				case string:
+					if keywordLike(v) {
+						if err := activeCtx.rejectKeywordLike(InvalidTypeValue, v); err != nil {
+							return err
+						}
+						// Expands to null (§5.2.2 step 2), and step 13.4.16
+						// keeps the null: step 15 then rejects it on a value
+						// object and step 9 below drops it from a node.
+						if containsKey {
+							expandedValue = resultMap[expandedProperty]
+						}
+						break
+					}
 					expandedValue, err = typeScopedContext.ExpandIri(v, true, true, nil, nil)
 					if err != nil {
 						return err
@@ -481,11 +545,28 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 						expandedValue = append(Arrayify(resultMap[expandedProperty]), expandedValue)
 					}
 				case map[string]interface{}:
-					if len(v) != 0 {
+					// §5.1.2 step 13.4.4: when framing, an empty map or a
+					// default object whose @default is an IRI.
+					defaultVal, hasDefault := v["@default"]
+					defaultStr, isString := defaultVal.(string)
+					switch {
+					case !frameExpansion:
+						return NewJsonLdError(InvalidTypeValue, "@type value must be a string or array of strings")
+					case len(v) == 0:
+						expandedValue = value
+					case len(v) == 1 && hasDefault && isString:
+						defaultIRI, err := typeScopedContext.ExpandIri(defaultStr, true, true, nil, nil)
+						if err != nil {
+							return err
+						}
+						if !IsAbsoluteIri(defaultIRI) {
+							return NewJsonLdError(InvalidTypeValue, "@default in @type must be an IRI")
+						}
+						expandedValue = map[string]interface{}{"@default": defaultIRI}
+					default:
 						return NewJsonLdError(InvalidTypeValue,
-							"@type value must be a an empty object for framing")
+							"@type value must be an empty object or a default object for framing")
 					}
-					expandedValue = value
 				default:
 					return NewJsonLdError(InvalidTypeValue, v)
 				}
@@ -493,6 +574,11 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 				expandedValue, err = api.expandElement(activeCtx, "@graph", value, opts, false, nil, keyPointer)
 				if err != nil {
 					return err
+				}
+				// A dropped scalar or value object leaves no map, so the
+				// array of maps the step asks for is empty, not [null].
+				if expandedValue == nil {
+					expandedValue = []interface{}{}
 				}
 				expandedValue = Arrayify(expandedValue)
 			} else if expandedProperty == "@value" { // 7.4.6)
@@ -571,16 +657,25 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 			} else if expandedProperty == "@list" { // 7.4.9)
 				// 7.4.9.1)
 				if activeProperty == "" || activeProperty == "@graph" {
+					if err := refuseFreeFloating(opts, map[string]interface{}{"@list": value}); err != nil {
+						return err
+					}
 					continue
 				}
 				// 7.4.9.2)
-				expandedValue, _ = api.expandElement(activeCtx, activeProperty, value, opts, false, nil, keyPointer)
+				expandedValue, err = api.expandElement(activeCtx, activeProperty, value, opts, false, nil, keyPointer)
+				if err != nil {
+					return err
+				}
 
 				// NOTE: step not in the spec yet
 				expandedValue = Arrayify(expandedValue)
 
 			} else if expandedProperty == "@set" { // 7.4.10)
-				expandedValue, _ = api.expandElement(activeCtx, activeProperty, value, opts, false, nil, keyPointer)
+				expandedValue, err = api.expandElement(activeCtx, activeProperty, value, opts, false, nil, keyPointer)
+				if err != nil {
+					return err
+				}
 			} else if expandedProperty == "@reverse" { // 7.4.11)
 				_, isMap := value.(map[string]interface{})
 				if !isMap {
@@ -668,7 +763,10 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 				// nested keys
 				nests = append(nests, key)
 			} else if expandedProperty == "@default" {
-				expandedValue, _ = api.expandElement(activeCtx, expandedProperty, value, opts, false, nil, keyPointer)
+				expandedValue, err = api.expandElement(activeCtx, expandedProperty, value, opts, false, nil, keyPointer)
+				if err != nil {
+					return err
+				}
 			} else if expandedProperty == "@explicit" ||
 				expandedProperty == "@embed" ||
 				expandedProperty == "@requireAll" ||
@@ -676,8 +774,9 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 				// these values are scalars
 				expandedValue = []interface{}{value}
 			}
-			// 7.4.12)
-			if expandedValue != nil {
+			// 7.4.12) An @id or @type that expanded to null is kept as null
+			// (JSON-LD 1.1 API §5.1.2 step 13.4.16 skips only a null @value).
+			if expandedValue != nil || expandedProperty == "@id" || expandedProperty == "@type" {
 				resultMap[expandedProperty] = expandedValue
 			}
 			// 7.4.13)
@@ -690,14 +789,17 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 		if td != nil && td.HasContext {
 			// TODO: fix calling a private method
 			//termCtx, err = activeCtx.Parse(ctx)
-			termCtx, err = activeCtx.parse(td.Context, make([]string, 0), false, true, false, true)
+			termCtx, err = activeCtx.parse(td.Context, td.BaseURL, nil, false, true, false, true)
 			if err != nil {
 				return err
 			}
 		}
 
 		valueMap, isMap := value.(map[string]interface{})
-		if termCtx.HasContainerMapping(key, "@language") && isMap {
+		// The container, index, and reverse of this key come from the active
+		// context. termCtx is only the context the value is expanded with, and
+		// a scoped context of null would otherwise drop @container.
+		if activeCtx.HasContainerMapping(key, "@language") && isMap {
 			var expandedValueList []interface{}
 
 			dir, hasDir := td.Direction, td.HasDirection
@@ -735,11 +837,11 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 				}
 			}
 			expandedValue = expandedValueList
-		} else if termCtx.HasContainerMapping(key, "@index") && isMap { // 7.6)
-			asGraph := termCtx.HasContainerMapping(key, "@graph")
+		} else if activeCtx.HasContainerMapping(key, "@index") && isMap { // 7.6)
+			asGraph := activeCtx.HasContainerMapping(key, "@graph")
 			indexKey := "@index"
-			if tdKey := termCtx.GetTermDefinition(key); tdKey != nil && tdKey.Index != "" {
-				indexKey = tdKey.Index
+			if td != nil && td.Index != "" {
+				indexKey = td.Index
 			}
 			var propertyIndex string
 			if indexKey != "@index" {
@@ -753,14 +855,14 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 			if err != nil {
 				return err
 			}
-		} else if termCtx.HasContainerMapping(key, "@id") && isMap {
-			asGraph := termCtx.HasContainerMapping(key, "@graph")
+		} else if activeCtx.HasContainerMapping(key, "@id") && isMap {
+			asGraph := activeCtx.HasContainerMapping(key, "@graph")
 			expandedValue, err = api.expandIndexMap(termCtx, key, valueMap, "@id", asGraph, "",
 				opts, keyPointer)
 			if err != nil {
 				return err
 			}
-		} else if termCtx.HasContainerMapping(key, "@type") && isMap {
+		} else if activeCtx.HasContainerMapping(key, "@type") && isMap {
 			// since container is @type, revert type scoped context when expanding
 			expandedValue, err = api.expandIndexMap(termCtx.RevertToPreviousContext(), key, valueMap, "@type",
 				false, "", opts, keyPointer)
@@ -798,7 +900,7 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 			continue
 		}
 		// 7.9)
-		if termCtx.HasContainerMapping(key, "@list") {
+		if activeCtx.HasContainerMapping(key, "@list") {
 			expandedValueMap, isMap := expandedValue.(map[string]interface{})
 			_, containsList := expandedValueMap["@list"]
 			if !isMap || !containsList {
@@ -813,13 +915,18 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 			}
 		}
 
-		isContainerGraph := termCtx.HasContainerMapping(key, "@graph")
-		isContainerID := termCtx.HasContainerMapping(key, "@id")
-		isContainerIndex := termCtx.HasContainerMapping(key, "@index")
+		isContainerGraph := activeCtx.HasContainerMapping(key, "@graph")
+		isContainerID := activeCtx.HasContainerMapping(key, "@id")
+		isContainerIndex := activeCtx.HasContainerMapping(key, "@index")
 		if isContainerGraph && !isContainerID && !isContainerIndex {
 			evList := Arrayify(expandedValue)
 			rVal := make([]interface{}, 0)
 			for _, ev := range evList {
+				if isFreeFloating(ev) {
+					if err := refuseFreeFloating(opts, ev); err != nil {
+						return err
+					}
+				}
 				ev = map[string]interface{}{
 					"@graph": Arrayify(ev),
 				}
@@ -829,7 +936,7 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 		}
 
 		// 7.10)
-		if termCtx.IsReverseProperty(key) {
+		if activeCtx.IsReverseProperty(key) {
 			var reverseMap map[string]interface{}
 			if reverseValue, containsReverse := resultMap["@reverse"]; containsReverse {
 				// 7.10.2)
@@ -897,6 +1004,16 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 
 	// expand each nested key
 	for _, n := range nests {
+		// §5.1.2 step 14.2.2 repeats steps 3 and 8 with the nesting key as
+		// active property, so its property-scoped context applies inside.
+		nestCtx := activeCtx
+		if td := activeCtx.GetTermDefinition(n); td != nil && td.HasContext {
+			var err error
+			nestCtx, err = activeCtx.parse(td.Context, td.BaseURL, nil, false, true, false, true)
+			if err != nil {
+				return err
+			}
+		}
 		nestPointer := jsonPointerChild(opts, pointer, n)
 		// Arrayify wraps a lone value, so the index only belongs in the pointer
 		// when the source really was an array.
@@ -910,7 +1027,10 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 			hasValues := false
 			if isMap {
 				for k := range nvMap {
-					expanded, _ := activeCtx.ExpandIri(k, false, true, nil, nil)
+					expanded, err := nestCtx.ExpandIri(k, false, true, nil, nil)
+					if err != nil {
+						return err
+					}
 					if expanded == "@value" {
 						hasValues = true
 						break
@@ -920,7 +1040,7 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 			if !isMap || hasValues {
 				return NewJsonLdError(InvalidNestValue, "nested value must be a node object")
 			}
-			err := api.expandObject(activeCtx, activeProperty, expandedActiveProperty, nv.(map[string]interface{}), resultMap, typeKey, opts, typeScopedContext, frameExpansion, nvPointer)
+			err := api.expandObject(nestCtx, activeProperty, expandedActiveProperty, nv.(map[string]interface{}), resultMap, typeKey, opts, typeScopedContext, frameExpansion, nvPointer)
 			if err != nil {
 				return err
 			}
@@ -941,7 +1061,7 @@ func (api *JsonLdApi) expandIndexMap(activeCtx *Context, activeProperty string, 
 		indexCtx := activeCtx
 		// if indexKey is @type, there may be a context defined for it
 		if td := activeCtx.GetTermDefinition(key); indexKey == "@type" && td != nil && td.HasContext {
-			newCtx, err := activeCtx.Parse(td.Context)
+			newCtx, err := activeCtx.parse(td.Context, td.BaseURL, nil, false, true, false, false)
 			if err != nil {
 				return nil, err
 			}
@@ -976,6 +1096,20 @@ func (api *JsonLdApi) expandIndexMap(activeCtx *Context, activeProperty string, 
 			}
 		}
 
+		// A keyword-like @id or @type map key expands to null (§5.2.2 step
+		// 2): the item gets a null @id, which the node map handles like any
+		// other, or no added type.
+		var nullKey bool
+		if (indexKey == "@id" || indexKey == "@type") && keywordLike(key) {
+			code := InvalidIDValue
+			if indexKey == "@type" {
+				code = InvalidTypeValue
+			}
+			if err := indexCtx.rejectKeywordLike(code, key); err != nil {
+				return nil, err
+			}
+			nullKey = true
+		}
 		if indexKey == "@id" {
 			// expand document relative
 			key, err = indexCtx.ExpandIri(key, true, false, nil, nil)
@@ -989,14 +1123,19 @@ func (api *JsonLdApi) expandIndexMap(activeCtx *Context, activeProperty string, 
 		// 7.6.2.3)
 		for _, itemValue := range indexValue.([]interface{}) {
 			if asGraph && !IsGraph(itemValue) {
+				if isFreeFloating(itemValue) {
+					if err := refuseFreeFloating(opts, itemValue); err != nil {
+						return nil, err
+					}
+				}
 				itemValue = map[string]interface{}{
 					"@graph": Arrayify(itemValue),
 				}
 			}
 			item := itemValue.(map[string]interface{})
 			if indexKey == "@type" {
-				if expandedKey == "@none" {
-					// ignore @none
+				if expandedKey == "@none" || nullKey {
+					// ignore @none and a null type
 				} else if types, hasType := item["@type"]; hasType {
 					switch v := types.(type) {
 					case string:
@@ -1019,7 +1158,11 @@ func (api *JsonLdApi) expandIndexMap(activeCtx *Context, activeProperty string, 
 
 			} else if _, containsKey := item[indexKey]; !containsKey && expandedKey != "@none" {
 				// 7.6.2.3.1)
-				item[indexKey] = key
+				if nullKey {
+					item[indexKey] = nil
+				} else {
+					item[indexKey] = key
+				}
 			}
 
 			// 7.6.2.3.2)
@@ -1027,4 +1170,37 @@ func (api *JsonLdApi) expandIndexMap(activeCtx *Context, activeProperty string, 
 		}
 	}
 	return expandedValueList, nil
+}
+
+// isFreeFloating reports whether v, placed directly in a graph, has no
+// subject to attach to: a value or list object, an empty map, or a node with
+// only @id (§5.1.2 step 19.1). A @graph container puts each of its values in
+// a graph (step 13.8.3), where such a value produces no RDF statement.
+func isFreeFloating(v interface{}) bool {
+	m, isMap := v.(map[string]interface{})
+	if !isMap {
+		return true
+	}
+	if _, hasID := m["@id"]; hasID && len(m) == 1 {
+		return true
+	}
+	return len(m) == 0 || IsValue(m) || IsList(m)
+}
+
+// refuseFreeFloating returns an error in safe mode for a free-floating value
+// that expansion drops or that produces no statement, since the caller would
+// otherwise sign or verify a dataset without it. Otherwise it returns nil.
+// A frame is a pattern, not data, so frame expansion keeps it quiet, as
+// jsonld.js does with keepFreeFloatingNodes.
+func refuseFreeFloating(opts *JsonLdOptions, v interface{}) error {
+	if opts == nil || !opts.SafeMode || opts.ProcessingMode == JsonLd_1_1_Frame {
+		return nil
+	}
+	code, kind := InvalidValueObject, "a value"
+	if IsList(v) {
+		code, kind = InvalidSetOrListObject, "a list object"
+	} else if m, isMap := v.(map[string]interface{}); isMap && !IsValue(m) {
+		code, kind = InvalidIDValue, "a node object with no property"
+	}
+	return NewJsonLdError(code, kind+" directly in a graph has no subject and would be dropped")
 }

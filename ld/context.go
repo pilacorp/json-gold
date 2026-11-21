@@ -51,6 +51,25 @@ type Context struct {
 	inverse         map[string]interface{} // cache for inverse context
 	previousContext *Context
 	fastCurieMap    map[string]interface{}
+
+	// termBaseURL is the base URL of the local context whose terms are
+	// being defined; createTermDefinition stores it in each definition.
+	termBaseURL string
+
+	// documents holds the context documents one JsonLdProcessor call has
+	// dereferenced, by URL. Contexts derived from one another share it, so
+	// the call loads each URL once (JSON-LD 1.1 API §4.1.2 step 5.2.4),
+	// scoped contexts and @import included. It is nil on a Context the
+	// caller builds, which keeps no documents between calls.
+	documents map[string]*RemoteDocument
+
+	// validated holds the scoped contexts validateScopedContext has checked
+	// in this processor call. It is shared and nil like documents.
+	validated map[scopedContextKey]bool
+
+	// protectedNull holds the protected terms whose IRI mapping is null.
+	// TermDefinitions keeps such a term as nil, which cannot carry the flag.
+	protectedNull map[string]bool
 }
 
 type Values struct {
@@ -80,6 +99,7 @@ type TermDefinition struct {
 	HasDirection bool     // Indicates if the @direction key is set (might be set to "null" which has a different semantic than being just absent, i.e. nil)
 	Language     *string  // The @language mapping for the term (optional)
 	HasLanguage  bool     // Indicates if the term explicitly specifies a language
+	BaseURL      string   // The base URL of the context that defined the term; its scoped context resolves against it
 
 	termHasColon bool // whether the term contains a colon (:)
 }
@@ -100,7 +120,13 @@ func (td *TermDefinition) Copy() *TermDefinition {
 	result.HasDirection = td.HasDirection
 	result.Language = td.Language
 	result.HasLanguage = td.HasLanguage
+	result.BaseURL = td.BaseURL
 	return &result
+}
+
+// isPrefix reports the prefix flag; an unset flag is false.
+func (td *TermDefinition) isPrefix() bool {
+	return td.Prefix != nil && *td.Prefix
 }
 
 func DeepCompareTermDef(lhs *TermDefinition, rhs *TermDefinition, listOrderMatters bool) bool {
@@ -111,10 +137,33 @@ func DeepCompareTermDef(lhs *TermDefinition, rhs *TermDefinition, listOrderMatte
 		lhs.Nest == rhs.Nest &&
 		lhs.Index == rhs.Index &&
 		lhs.Protected == rhs.Protected &&
+		lhs.isPrefix() == rhs.isPrefix() &&
 		reflect.DeepEqual(lhs.Container, rhs.Container) &&
 		reflect.DeepEqual(lhs.Direction, rhs.Direction) && lhs.HasDirection == rhs.HasDirection &&
 		reflect.DeepEqual(lhs.Language, rhs.Language) && lhs.HasLanguage == rhs.HasLanguage &&
-		DeepCompare(lhs.Context, rhs.Context, listOrderMatters)
+		DeepCompare(lhs.resolvedContext(), rhs.resolvedContext(), listOrderMatters)
+}
+
+// resolvedContext returns the scoped context with each context IRI resolved
+// against the definition's base URL. A definition carries its base URL
+// (JSON-LD 1.1 API §4.1), so one relative IRI read from two contexts may
+// name two different scoped contexts.
+func (td *TermDefinition) resolvedContext() interface{} {
+	switch ctx := td.Context.(type) {
+	case string:
+		return Resolve(td.BaseURL, ctx)
+	case []interface{}:
+		resolved := make([]interface{}, len(ctx))
+		for i, c := range ctx {
+			if s, isString := c.(string); isString {
+				resolved[i] = Resolve(td.BaseURL, s)
+			} else {
+				resolved[i] = c
+			}
+		}
+		return resolved
+	}
+	return td.Context
 }
 
 type FastCurieEntry struct {
@@ -171,6 +220,8 @@ func (c *Context) AsMap() map[string]interface{} {
 // CopyContext creates a full copy of the given context.
 func CopyContext(ctx *Context) *Context {
 	context := NewContext(nil, ctx.options)
+	context.documents = ctx.documents
+	context.validated = ctx.validated
 	if ctx.Values != nil {
 		values := *ctx.Values
 		context.Values = &values
@@ -182,6 +233,13 @@ func CopyContext(ctx *Context) *Context {
 
 	for k, v := range ctx.Protected {
 		context.Protected[k] = v
+	}
+
+	if len(ctx.protectedNull) > 0 {
+		context.protectedNull = make(map[string]bool, len(ctx.protectedNull))
+		for k := range ctx.protectedNull {
+			context.protectedNull[k] = true
+		}
 	}
 
 	// do not copy c.inverse, because it will be regenerated
@@ -200,7 +258,101 @@ func CopyContext(ctx *Context) *Context {
 // than just parsing the context. In particular, we need to check if additional logic is required
 // to load remote scoped contexts.
 func (c *Context) Parse(localContext interface{}) (*Context, error) {
-	return c.parse(localContext, make([]string, 0), false, true, false, false)
+	return c.parse(localContext, c.Values.Base, nil, false, true, false, false)
+}
+
+// DefaultMaxRemoteContexts is the limit used when
+// JsonLdOptions.MaxRemoteContexts is zero. It counts across nesting and
+// siblings, so a cycle or a context listing its child twice per level
+// ends early.
+const DefaultMaxRemoteContexts = 32
+
+// remoteContexts tracks the remote contexts of one @context value: how many
+// were processed, toward the limit of step 5.2.3, and the documents loaded
+// for it when no processor call holds them.
+type remoteContexts struct {
+	loaded    map[string]*RemoteDocument
+	processed int
+
+	// validated stands in for Context.validated on a Context the caller
+	// builds, so a scoped context that names itself is validated once.
+	validated map[scopedContextKey]bool
+}
+
+// scopedContextKey names one scoped context value for validateScopedContext:
+// a resolved URL, or the identity of an inline map or array, with its base.
+// An array also needs its length, as two arrays can share a backing store.
+type scopedContextKey struct {
+	url  string
+	ptr  uintptr
+	len  int
+	base string
+}
+
+// validateScopedContext is JSON-LD 1.1 API §4.2.2 step 21: the scoped context
+// of a term definition is processed when the term is defined, so an error in
+// it is reported even if the term is never used. The result is discarded; the
+// scoped context is processed again where it applies.
+//
+// As step 21 says, the validation works on a copy of remote contexts, so the
+// contexts it loads do not count toward the caller's limit. Each scoped
+// context value is validated once per processor call: applying a scoped
+// context defines its terms again, and validating their scoped contexts
+// every time would repeat the whole nested tree for each value of the term.
+func (c *Context) validateScopedContext(termValue interface{}, baseURL string, remote *remoteContexts) error {
+	termMap, isMap := termValue.(map[string]interface{})
+	scoped, hasScoped := termMap["@context"]
+	if !isMap || !hasScoped {
+		return nil
+	}
+	key := scopedContextKey{base: baseURL}
+	switch v := scoped.(type) {
+	case string:
+		key.url = Resolve(baseURL, v)
+	case map[string]interface{}:
+		key.ptr = reflect.ValueOf(v).Pointer()
+	case []interface{}:
+		key.ptr, key.len = reflect.ValueOf(v).Pointer(), len(v)
+	}
+	validated := c.validated
+	if validated == nil {
+		if remote.validated == nil {
+			remote.validated = make(map[scopedContextKey]bool)
+		}
+		validated = remote.validated
+	}
+	if key.url != "" || key.ptr != 0 {
+		if validated[key] {
+			return nil
+		}
+		validated[key] = true
+	}
+	copied := &remoteContexts{loaded: remote.loaded, processed: remote.processed, validated: remote.validated}
+	if _, err := c.parse(scoped, baseURL, copied, false, true, false, true); err != nil {
+		return NewJsonLdError(InvalidScopedContext, err)
+	}
+	return nil
+}
+
+// loadContextDocument dereferences a context URL, or returns the document
+// already loaded for it (JSON-LD 1.1 API §4.1.2 step 5.2.4): in this
+// processor call, or else for this @context value. The document may be
+// shared, so callers must not modify it.
+func (c *Context) loadContextDocument(uri string, remote *remoteContexts) (*RemoteDocument, error) {
+	cache := c.documents
+	if cache == nil {
+		cache = remote.loaded
+	}
+	if rd, loaded := cache[uri]; loaded {
+		return rd, nil
+	}
+	rd, err := c.options.DocumentLoader.LoadDocument(uri)
+	if err != nil {
+		return nil, NewJsonLdError(LoadingRemoteContextFailed,
+			fmt.Errorf("dereferencing a URL did not result in a valid JSON-LD context (%s): %w", uri, err))
+	}
+	cache[uri] = rd
+	return rd, nil
 }
 
 // parse processes a local context, retrieving any URLs as necessary, and
@@ -209,8 +361,11 @@ func (c *Context) Parse(localContext interface{}) (*Context, error) {
 // If parsingARemoteContext is true, localContext represents a remote context
 // that has been parsed and sent into this method. This must be set to know
 // whether to propagate the @base key from the context to the result.
-func (c *Context) parse(localContext interface{}, remoteContexts []string, parsingARemoteContext, propagate,
+func (c *Context) parse(localContext interface{}, baseURL string, remote *remoteContexts, parsingARemoteContext, propagate,
 	protected, overrideProtected bool) (*Context, error) { //nolint:unparam
+	if remote == nil {
+		remote = &remoteContexts{loaded: make(map[string]*RemoteDocument)}
+	}
 
 	// normalize local context to an array of @context objects
 	contexts := Arrayify(localContext)
@@ -250,6 +405,8 @@ func (c *Context) parse(localContext interface{}, remoteContexts []string, parsi
 					"tried to nullify a context with protected terms outside of a term definition.")
 			}
 			nullCtx := NewContext(nil, c.options)
+			nullCtx.documents = c.documents
+			nullCtx.validated = c.validated
 			if !propagate {
 				nullCtx.previousContext = result
 			}
@@ -264,20 +421,24 @@ func (c *Context) parse(localContext interface{}, remoteContexts []string, parsi
 			result = ctx
 		// 3.2)
 		case string:
-			uri := Resolve(result.Values.Base, ctx)
-			// 3.2.2
-			for _, remoteCtx := range remoteContexts {
-				if remoteCtx == uri {
+			uri := Resolve(baseURL, ctx)
+			// JSON-LD 1.1 §4.1.2 step 5.2.3. JSON-LD 1.0 names the same
+			// condition a recursive context inclusion.
+			limit := c.options.MaxRemoteContexts
+			if limit <= 0 {
+				limit = DefaultMaxRemoteContexts
+			}
+			if remote.processed >= limit {
+				if result.processingMode(1.0) {
 					return nil, NewJsonLdError(RecursiveContextInclusion, uri)
 				}
+				return nil, NewJsonLdError(ContextOverflow, uri)
 			}
-			remoteContexts = append(remoteContexts, uri)
+			remote.processed++
 
-			// 3.2.3: Dereference context
-			rd, err := c.options.DocumentLoader.LoadDocument(uri)
+			rd, err := c.loadContextDocument(uri, remote)
 			if err != nil {
-				return nil, NewJsonLdError(LoadingRemoteContextFailed,
-					fmt.Errorf("dereferencing a URL did not result in a valid JSON-LD context (%s): %w", uri, err))
+				return nil, err
 			}
 			remoteContextMap, isMap := rd.Document.(map[string]interface{})
 			context, hasContextKey := remoteContextMap["@context"]
@@ -287,10 +448,15 @@ func (c *Context) parse(localContext interface{}, remoteContexts []string, parsi
 				return nil, NewJsonLdError(InvalidRemoteContext, context)
 			}
 
-			// 3.2.4
-			remoteContextsCpy := make([]string, 0, len(remoteContexts))
-			copy(remoteContextsCpy, remoteContexts)
-			resultRef, err := result.parse(context, remoteContextsCpy, true, true, false, overrideProtected)
+			// JSON-LD 1.1 §4.1.2 step 5.2.6: process the remote context
+			// with the documentUrl of the loaded context as base, so that
+			// @import and nested context IRIs resolve next to it even after
+			// a redirect. The active context's base stays the document base.
+			ctxBase := rd.DocumentURL
+			if ctxBase == "" {
+				ctxBase = uri
+			}
+			resultRef, err := result.parse(context, ctxBase, remote, true, true, false, overrideProtected)
 			if err != nil {
 				return nil, err
 			}
@@ -302,14 +468,6 @@ func (c *Context) parse(localContext interface{}, remoteContexts []string, parsi
 		default:
 			// 3.3
 			return nil, NewJsonLdError(InvalidLocalContext, context)
-		}
-
-		// dereference @context key if present
-		if nestedContext := contextMap["@context"]; nestedContext != nil {
-			contextMap, isMap = nestedContext.(map[string]interface{})
-			if !isMap {
-				return nil, NewJsonLdError(InvalidLocalContext, nestedContext)
-			}
 		}
 
 		pm := c.Values.processingMode
@@ -340,12 +498,11 @@ func (c *Context) parse(localContext interface{}, remoteContexts []string, parsi
 			if !isString {
 				return nil, NewJsonLdError(InvalidImportValue, "@import must be a string")
 			}
-			uri := Resolve(result.Values.Base, importStr)
+			uri := Resolve(baseURL, importStr)
 
-			rd, err := c.options.DocumentLoader.LoadDocument(uri)
+			rd, err := c.loadContextDocument(uri, remote)
 			if err != nil {
-				return nil, NewJsonLdError(LoadingRemoteContextFailed,
-					fmt.Errorf("dereferencing a URL did not result in a valid JSON-LD context (%s): %w", uri, err))
+				return nil, err
 			}
 			importCtxDocMap, isMap := rd.Document.(map[string]interface{})
 			context, hasContextKey := importCtxDocMap["@context"]
@@ -361,11 +518,16 @@ func (c *Context) parse(localContext interface{}, remoteContexts []string, parsi
 						fmt.Sprintf("%s must not include @import entry", importStr))
 				}
 
-				// merge import context into the outer context
-				for k, v := range contextMap {
-					importCtxMap[k] = v
+				// Step 5.6.7: merge into a new map, entries of the outer
+				// context winning. The imported map belongs to the loader.
+				merged := make(map[string]interface{}, len(importCtxMap)+len(contextMap))
+				for k, v := range importCtxMap {
+					merged[k] = v
 				}
-				contextMap = importCtxMap
+				for k, v := range contextMap {
+					merged[k] = v
+				}
+				contextMap = merged
 			} else {
 				return nil, NewJsonLdError(InvalidRemoteContext, fmt.Sprintf("%s must be an object", importStr))
 			}
@@ -458,16 +620,34 @@ func (c *Context) parse(localContext interface{}, remoteContexts []string, parsi
 		// all its terms to be "protected" (exceptions can be made on a
 		// per-definition basis)
 		if protectedVal, protectedPresent := contextMap["@protected"]; protectedPresent {
-			defined["@protected"] = protectedVal.(bool)
+			protectedBool, isBool := protectedVal.(bool)
+			if !isBool {
+				return nil, NewJsonLdError(InvalidProtectedValue, "@protected must be a boolean")
+			}
+			defined["@protected"] = protectedBool
 		} else if protected {
 			defined["@protected"] = true
 		}
 
+		result.termBaseURL = baseURL
 		for key := range contextMap {
 			if _, skip := nonTermDefKeys[key]; !skip {
 				if err := result.createTermDefinition(contextMap, key, defined, overrideProtected); err != nil {
 					return nil, err
 				}
+			}
+		}
+		// §4.2.2 step 21 validates a scoped context against the active
+		// context at the time the term is defined, which depends on the
+		// order of the entries. Go maps have no order, so the scoped
+		// contexts are validated once all terms of this context exist; the
+		// result is then the same on every run.
+		for key := range contextMap {
+			if _, skip := nonTermDefKeys[key]; skip || !definesTerm(key, contextMap[key]) {
+				continue
+			}
+			if err := result.validateScopedContext(contextMap[key], baseURL, remote); err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -521,7 +701,15 @@ func (c *Context) CompactValue(activeProperty string, value map[string]interface
 	var err error
 
 	if hasID && idOrIndex { // 4
-		if propType == "@id" { // 4.1
+		if idVal == nil {
+			// A keyword-like @id expands to null (§5.2.2 step 2). IRI
+			// compacting null gives null (§6.2.2 step 1) for @id and @vocab
+			// mappings; otherwise step 9 keeps the node reference.
+			if propType == "@id" || propType == "@vocab" {
+				return nil, nil
+			}
+			result = value
+		} else if propType == "@id" { // 4.1
 			result, err = c.CompactIri(idVal.(string), nil, false, false)
 			if err != nil {
 				return nil, err
@@ -646,15 +834,47 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 		return NewJsonLdError(CyclicIRIMapping, term)
 	}
 
+	// 2)
+	if term == "" {
+		return NewJsonLdError(InvalidTermDefinition, "the empty string cannot be a term")
+	}
+
 	defined[term] = false
 
 	value := context[term]
 	mapValue, isMap := value.(map[string]interface{})
-	idValue, hasID := mapValue["@id"]
-	if value == nil || (isMap && hasID && idValue == nil) {
-		c.TermDefinitions[term] = nil
-		defined[term] = true
+
+	// 4) and 5) come before the value is checked, so a keyword defined as
+	// null or as a non-map is a keyword redefinition. @type may only take a
+	// map holding @container: @set, @protected or both; an empty map is not one.
+	if IsKeyword(term) {
+		var hasAllowedKeysOnly = true
+		for k := range mapValue {
+			if k != "@container" && k != "@protected" {
+				hasAllowedKeysOnly = false
+				break
+			}
+		}
+		isSet := isMap && len(mapValue) > 0 && (mapValue["@container"] == "@set" || mapValue["@container"] == nil)
+		if c.processingMode(1.1) && term == "@type" && hasAllowedKeysOnly && isSet {
+			// this is the only case were redefining a keyword is allowed
+		} else {
+			return NewJsonLdError(KeywordRedefinition, term)
+		}
+	} else if ignoredKeywordPattern.MatchString(term) {
+		//log.Printf("Terms beginning with '@' are reserved for future use and ignored: %s.", term)
 		return nil
+	}
+
+	// 7) and 14.1: a null value is {"@id": null}. A term whose IRI mapping is
+	// null goes through the same entry checks; only steps 13 and 14 differ.
+	nullID := false
+	if value == nil {
+		mapValue = map[string]interface{}{"@id": nil}
+		isMap = true
+		nullID = true
+	} else if idValue, hasID := mapValue["@id"]; isMap && hasID && idValue == nil {
+		nullID = true
 	}
 
 	simpleTerm := false
@@ -666,26 +886,6 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 
 	if !isMap {
 		return NewJsonLdError(InvalidTermDefinition, value)
-	}
-
-	if IsKeyword(term) {
-		vmap, isMap := value.(map[string]interface{})
-		var hasAllowedKeysOnly = true
-		for k := range vmap {
-			if k != "@container" && k != "@protected" {
-				hasAllowedKeysOnly = false
-				break
-			}
-		}
-		isSet := isMap && (vmap["@container"] == "@set" || vmap["@container"] == nil)
-		if c.processingMode(1.1) && term == "@type" && hasAllowedKeysOnly && isSet {
-			// this is the only case were redefining a keyword is allowed
-		} else {
-			return NewJsonLdError(KeywordRedefinition, term)
-		}
-	} else if ignoredKeywordPattern.MatchString(term) {
-		//log.Printf("Terms beginning with '@' are reserved for future use and ignored: %s.", term)
-		return nil
 	}
 
 	// keep reference to previous mapping for potential `@protected` check
@@ -741,6 +941,11 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 			return NewJsonLdError(InvalidIRIMapping,
 				fmt.Sprintf("expected string for @reverse value. got %v", reverseValue))
 		}
+		// §4.2.2: a keyword-like @reverse leaves the term undefined, checked
+		// before IRI expansion turns it into null.
+		if ignoredKeywordPattern.MatchString(reverseStr) {
+			return c.ignoreTermDefinition(term, prevDefinition, defined, reverseStr)
+		}
 		id, err := c.ExpandIri(reverseStr, false, true, context, defined)
 		if err != nil {
 			return err
@@ -750,14 +955,9 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 				"@context @reverse value must be an absolute IRI or a blank node identifier, got %s", id))
 		}
 
-		if ignoredKeywordPattern.MatchString(reverseStr) {
-			//log.Printf("Values beginning with '@' are reserved for future use and ignored: %s.", reverseStr)
-			return nil
-		}
-
 		definition.ID = id
 		definition.Reverse = true
-	} else if idValue, hasID := val["@id"]; hasID { // 13)
+	} else if idValue, hasID := val["@id"]; hasID && !nullID { // 13)
 		idStr, isString := idValue.(string)
 		if !isString {
 			return NewJsonLdError(InvalidIRIMapping, "expected value of @id to be a string")
@@ -766,8 +966,7 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 		if term != idStr {
 
 			if !IsKeyword(idStr) && ignoredKeywordPattern.MatchString(idStr) {
-				//log.Printf("Values beginning with '@' are reserved for future use and ignored: %s.", idStr)
-				return nil
+				return c.ignoreTermDefinition(term, prevDefinition, defined, idStr)
 			}
 
 			res, err := c.ExpandIri(idStr, false, true, context, defined)
@@ -820,7 +1019,7 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 		// 14)
 	}
 
-	if definition.ID == "" {
+	if definition.ID == "" && !nullID {
 		if termHasColon {
 			prefix := term[0:colIndex]
 			if _, containsPrefix := context[prefix]; containsPrefix {
@@ -843,8 +1042,16 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 	}
 
 	// handle term protection
-	valProtected, protectedFound := mapValue["@protected"]
-	if (protectedFound && valProtected.(bool)) || (defined["@protected"] && !(protectedFound && !valProtected.(bool))) {
+	// 11) a term's own @protected overrides the context-wide flag.
+	protectTerm := defined["@protected"]
+	if valProtected, protectedFound := mapValue["@protected"]; protectedFound {
+		protectedBool, isBool := valProtected.(bool)
+		if !isBool {
+			return NewJsonLdError(InvalidProtectedValue, "@protected must be a boolean")
+		}
+		protectTerm = protectedBool
+	}
+	if protectTerm {
 		c.Protected[term] = true
 		definition.Protected = true
 	}
@@ -1013,8 +1220,11 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 
 	// scoped contexts
 	if ctxVal, hasCtx := val["@context"]; hasCtx {
+		// JSON-LD 1.1 API §4.2.2 keeps the base URL with the
+		// scoped context so it resolves where it was defined.
 		definition.Context = ctxVal
 		definition.HasContext = true
+		definition.BaseURL = c.termBaseURL
 	}
 
 	// 17)
@@ -1072,12 +1282,21 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 		definition.Nest = nest
 	}
 
+	if nullID {
+		return c.defineNullTerm(term, mapValue, prevDefinition, defined, overrideProtected)
+	}
+
 	// disallow aliasing @context and @preserve
 	if id := definition.ID; id == "@context" || id == "@preserve" {
 		return NewJsonLdError(InvalidKeywordAlias, "@context and @preserve cannot be aliased")
 	}
 
-	// Check for overriding protected terms
+	// Check for overriding protected terms. A protected null mapping
+	// differs from any definition with an IRI mapping.
+	if c.protectedNull[term] && !overrideProtected {
+		return NewJsonLdError(ProtectedTermRedefinition, "invalid JSON-LD syntax; tried to redefine a protected term")
+	}
+	delete(c.protectedNull, term)
 	if prevDefinition != nil {
 		if protectedVal := prevDefinition.Protected; protectedVal && !overrideProtected {
 			// force new term to continue to be protected and see if the mappings would be equal
@@ -1086,12 +1305,83 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 			if !DeepCompareTermDef(prevDefinition, definition, false) {
 				return NewJsonLdError(ProtectedTermRedefinition, "invalid JSON-LD syntax; tried to redefine a protected term")
 			}
+			// §4.2.2: an identical redefinition keeps the previous
+			// definition, so its scoped context keeps its base URL.
+			definition = prevDefinition
 		}
 	}
 
 	// 18)
 	c.TermDefinitions[term] = definition
 
+	return nil
+}
+
+// defineNullTerm stores a term whose IRI mapping is null (JSON-LD 1.1 API
+// §4.2.2 step 14.1). The term stays nil in TermDefinitions, so its protection
+// is kept in protectedNull for the step 27 check on a later redefinition.
+func (c *Context) defineNullTerm(term string, mapValue map[string]interface{}, prev *TermDefinition,
+	defined map[string]bool, overrideProtected bool) error {
+	protectTerm := defined["@protected"]
+	if valProtected, protectedFound := mapValue["@protected"]; protectedFound {
+		protectedBool, isBool := valProtected.(bool)
+		if !isBool {
+			return NewJsonLdError(InvalidProtectedValue, "@protected must be a boolean")
+		}
+		protectTerm = protectedBool
+	}
+
+	if !overrideProtected {
+		if prev != nil && prev.Protected {
+			return NewJsonLdError(ProtectedTermRedefinition, "invalid JSON-LD syntax; tried to redefine a protected term")
+		}
+		// An identical redefinition keeps the term protected.
+		protectTerm = protectTerm || c.protectedNull[term]
+	}
+
+	c.TermDefinitions[term] = nil
+	if protectTerm {
+		if c.protectedNull == nil {
+			c.protectedNull = make(map[string]bool)
+		}
+		c.protectedNull[term] = true
+		c.Protected[term] = true
+	} else {
+		delete(c.protectedNull, term)
+	}
+	defined[term] = true
+	return nil
+}
+
+// definesTerm reports whether createTermDefinition defines term from value,
+// rather than ignoring it for a keyword-like term, @id or @reverse
+// (§4.2.2 steps 5, 13.3 and 14.2.2), which return before step 21.
+func definesTerm(term string, value interface{}) bool {
+	if ignoredKeywordPattern.MatchString(term) {
+		return false
+	}
+	termMap, _ := value.(map[string]interface{})
+	if rev, isString := termMap["@reverse"].(string); isString && ignoredKeywordPattern.MatchString(rev) {
+		return false
+	}
+	if id, isString := termMap["@id"].(string); isString && id != term && keywordLike(id) {
+		return false
+	}
+	return true
+}
+
+// ignoreTermDefinition ends a term definition whose @id or @reverse is
+// keyword-like (§4.2.2 steps 13.3 and 14.2.2). The term keeps its previous
+// definition, as jsonld.js does: step 6 removed it, and returning without it
+// would let a later context redefine a protected term past step 27.
+func (c *Context) ignoreTermDefinition(term string, prev *TermDefinition, defined map[string]bool, iri string) error {
+	if err := c.rejectKeywordLike(InvalidIRIMapping, iri); err != nil {
+		return err
+	}
+	if prev != nil {
+		c.TermDefinitions[term] = prev
+	}
+	defined[term] = true
 	return nil
 }
 
@@ -1102,6 +1392,21 @@ func (c *Context) RevertToPreviousContext() *Context {
 	} else {
 		return CopyContext(c.previousContext)
 	}
+}
+
+// rejectKeywordLike returns an error in safe mode, where a keyword-like IRI
+// must not turn into null without the caller knowing; otherwise nil.
+func (c *Context) rejectKeywordLike(code ErrorCode, iri string) error {
+	if c.options != nil && c.options.SafeMode {
+		return NewJsonLdError(code, fmt.Sprintf("keyword-like IRI %q expands to null", iri))
+	}
+	return nil
+}
+
+// keywordLike reports whether s has the form of a keyword without being one.
+// JSON-LD 1.1 API §5.2.2 step 2 expands such an IRI to null.
+func keywordLike(s string) bool {
+	return !IsKeyword(s) && ignoredKeywordPattern.MatchString(s)
 }
 
 // ExpandIri expands a string value to a full IRI.
@@ -1121,7 +1426,7 @@ func (c *Context) ExpandIri(value string, relative bool, vocab bool, context map
 		return value, nil
 	}
 
-	if !IsKeyword(value) && ignoredKeywordPattern.MatchString(value) {
+	if keywordLike(value) {
 		return "", nil
 	}
 
@@ -1432,14 +1737,19 @@ func (c *Context) CompactIri(iri string, value interface{}, relativeToVocab bool
 					preferredValues = append(preferredValues, "@reverse")
 				}
 
-				// 2.12.1)
-				result, err := c.CompactIri(idVal.(string), nil, true, false)
-				if err != nil {
-					return "", err
+				// 2.12.1) A keyword-like @id expanded to null; IRI compacting
+				// null gives null (§6.2.2 step 1), which no term maps to.
+				idStr, isString := idVal.(string)
+				result := ""
+				if isString {
+					var err error
+					if result, err = c.CompactIri(idStr, nil, true, false); err != nil {
+						return "", err
+					}
 				}
 				resultVal, hasResult := c.TermDefinitions[result]
 				check := false
-				if hasResult {
+				if isString && hasResult {
 					resultIDVal, hasResultID := resultVal.ID, resultVal.ID != ""
 					check = hasResultID && idVal == resultIDVal
 				}
@@ -1555,7 +1865,14 @@ func (c *Context) CompactIri(iri string, value interface{}, relativeToVocab bool
 
 	// compact IRI relative to base
 	if !relativeToVocab {
-		return RemoveBase(c.Values.Base, iri), nil
+		rel := RemoveBase(c.Values.Base, iri)
+		// A relative IRI in the form of a keyword would expand to null or to
+		// the keyword (§5.2.2 steps 1-2), so it gets a "./" prefix (test
+		// compact #t0111).
+		if ignoredKeywordPattern.MatchString(rel) {
+			rel = "./" + rel
+		}
+		return rel, nil
 	}
 
 	// return IRI as is
@@ -1963,6 +2280,12 @@ func (c *Context) ExpandValue(activeProperty string, value interface{}) (interfa
 			if err != nil {
 				return nil, err
 			}
+			if keywordLike(strVal) { // §5.2.2 step 2: expands to null
+				if err := c.rejectKeywordLike(InvalidIDValue, strVal); err != nil {
+					return nil, err
+				}
+				rval["@id"] = nil
+			}
 		} else {
 			rval["@value"] = value
 		}
@@ -1977,6 +2300,12 @@ func (c *Context) ExpandValue(activeProperty string, value interface{}) (interfa
 			rval["@id"], err = c.ExpandIri(strVal, true, true, nil, nil)
 			if err != nil {
 				return nil, err
+			}
+			if keywordLike(strVal) { // §5.2.2 step 2: expands to null
+				if err := c.rejectKeywordLike(InvalidIDValue, strVal); err != nil {
+					return nil, err
+				}
+				rval["@id"] = nil
 			}
 		} else {
 			rval["@value"] = value

@@ -526,29 +526,37 @@ func RemoveValue(subject interface{}, property string, value interface{}, proper
 // CompareValues compares two JSON-LD values for equality.
 // Two JSON-LD values will be considered equal if:
 //
-// 1. They are both primitives of the same type and value.
-// 2. They are both @values with the same @value, @type, and @language, OR
+// 1. They are both primitives with the same value. Numbers compare by the
+// float64 value toRDF writes, so json.Number("1") equals float64(1).
+// 2. They are both @values with the same @value, @type, @language and
+// @index, OR
 // 3. They both have @ids they are the same.
+//
+// A JSON literal's @value is compared entry by entry.
 func CompareValues(v1 interface{}, v2 interface{}) bool {
 	v1Map, isv1Map := v1.(map[string]interface{})
 	v2Map, isv2Map := v2.(map[string]interface{})
 
-	if !isv1Map && !isv2Map && v1 == v2 {
+	if !isv1Map && !isv2Map && sameValue(v1, v2) {
 		return true
 	}
 
 	if IsValue(v1) && IsValue(v2) {
-		if v1Map["@value"] == v2Map["@value"] &&
-			v1Map["@type"] == v2Map["@type"] &&
-			v1Map["@language"] == v2Map["@language"] &&
-			v1Map["@index"] == v2Map["@index"] {
+		equal := true
+		for _, e := range valueEntries {
+			if !sameValue(v1Map[e], v2Map[e]) {
+				equal = false
+				break
+			}
+		}
+		if equal {
 			return true
 		}
 	}
 
 	id1, v1containsID := v1Map["@id"]
 	id2, v2containsID := v2Map["@id"]
-	if (isv1Map && v1containsID) && (isv2Map && v2containsID) && (id1 == id2) {
+	if (isv1Map && v1containsID) && (isv2Map && v2containsID) && sameValue(id1, id2) {
 		return true
 	}
 

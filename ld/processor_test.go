@@ -312,17 +312,6 @@ func TestSuite(t *testing.T) {
 
 	SequenceLoop:
 		for _, td := range testList {
-			// ToRDF tests with a reference to RFC3986 don't agree with Go implementation of RFC 3986
-			// (see url.URL.ResolveReference(). Skipping for now, as other JSON-LD implementations do.
-			purpose := td.Raw["purpose"]
-			if purpose != nil && strings.Contains(purpose.(string), "RFC3986") {
-				log.Println("Skipping RFC3986 test", td.ID, ":", td.Name)
-
-				earlReport.addAssertion(td.Name, true, false)
-
-				continue
-			}
-
 			if td.Skip {
 				log.Println("Test marked as skipped:", td.ID, ":", td.Name)
 
@@ -620,7 +609,7 @@ func NewEarlReport() *EarlReport {
 				"earl:outcome":    map[string]interface{}{"@type": "@id"},
 				"dc:date":         map[string]interface{}{"@type": "xsd:date"},
 			},
-			"@id": "https://github.com/piprate/json-gold",
+			"@id": "https://github.com/pilacorp/json-gold",
 			"@type": []interface{}{
 				"doap:Project",
 				"earl:TestSubject",
@@ -628,8 +617,8 @@ func NewEarlReport() *EarlReport {
 			},
 			"doap:name":                 "JSON-goLD",
 			"dc:title":                  "JSON-goLD",
-			"doap:homepage":             "https://github.com/piprate/json-gold",
-			"doap:license":              "https://github.com/piprate/json-gold/blob/master/LICENSE",
+			"doap:homepage":             "https://github.com/pilacorp/json-gold",
+			"doap:license":              "https://github.com/pilacorp/json-gold/blob/master/LICENSE",
 			"doap:description":          "A JSON-LD processor for Go",
 			"doap:programming-language": "Go",
 			"dc:creator":                assertor,
@@ -643,7 +632,7 @@ func NewEarlReport() *EarlReport {
 				"foaf:homepage": assertor,
 			},
 			"doap:release": map[string]interface{}{
-				"@id":           fmt.Sprintf("https://github.com/piprate/json-gold/tree/%s", version),
+				"@id":           fmt.Sprintf("https://github.com/pilacorp/json-gold/tree/%s", version),
 				"@type":         "doap:Version",
 				"doap:revision": version,
 				"doap:name":     fmt.Sprintf("json-gold-%s", version),

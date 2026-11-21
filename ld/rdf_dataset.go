@@ -202,7 +202,10 @@ func (ds *RDFDataset) ParseContext(contextLike interface{}, opts *JsonLdOptions)
 	context := NewContext(nil, opts)
 
 	// Context will do our recursive parsing and initial IRI resolution
-	context, _ = context.Parse(contextLike)
+	context, err := context.Parse(contextLike)
+	if err != nil {
+		return err
+	}
 	// And then leak to us the potential 'prefixes'
 	prefixes := context.GetPrefixes(true)
 
@@ -225,12 +228,23 @@ var nilIRI = NewIRI(RDFNil)
 
 // GraphToRDF creates an array of RDF triples for the given graph.
 func (ds *RDFDataset) GraphToRDF(graphName string, graph map[string]interface{}, issuer *IdentifierIssuer,
-	produceGeneralizedRdf bool) {
+	produceGeneralizedRdf bool) error {
+	return ds.graphToRDF(graphName, graph, issuer, produceGeneralizedRdf, false)
+}
+
+// graphToRDF is GraphToRDF. With safeMode, a statement left out because an
+// IRI or language tag is not well-formed (§8.1) is an error instead, so the
+// caller does not sign or verify a dataset that silently lost data.
+func (ds *RDFDataset) graphToRDF(graphName string, graph map[string]interface{}, issuer *IdentifierIssuer,
+	produceGeneralizedRdf, safeMode bool) error {
 	// 4.2)
 	triples := make([]*Quad, 0)
 	// 4.3)
 	for _, id := range GetKeys(graph) {
 		if IsRelativeIri(id) {
+			if safeMode {
+				return relativeIRIError("subject", id)
+			}
 			continue
 		}
 
@@ -249,6 +263,9 @@ func (ds *RDFDataset) GraphToRDF(graphName string, graph map[string]interface{},
 				continue
 			} else if IsRelativeIri(property) {
 				// 4.3.2.4)
+				if safeMode {
+					return relativeIRIError("predicate", property)
+				}
 				continue
 			} else {
 				values = node[property].([]interface{})
@@ -272,7 +289,11 @@ func (ds *RDFDataset) GraphToRDF(graphName string, graph map[string]interface{},
 
 			for _, item := range values {
 				var object Node
-				object, triples = objectToRDF(item, issuer, graphName, triples)
+				var err error
+				object, triples, err = objectToRDF(item, issuer, graphName, triples, safeMode)
+				if err != nil {
+					return err
+				}
 				if object != nil {
 					triples = append(triples, NewQuad(subject, predicate, object, graphName))
 				}
@@ -290,9 +311,20 @@ func (ds *RDFDataset) GraphToRDF(graphName string, graph map[string]interface{},
 	for _, t := range triples {
 		if v.validQuad(t) {
 			sanitisedTriples = append(sanitisedTriples, t)
+		} else if safeMode {
+			return NewJsonLdError(InvalidRdfTerm, fmt.Sprintf(
+				"statement about %q with predicate %q has an IRI or language tag that is not well-formed",
+				t.Subject.GetValue(), t.Predicate.GetValue()))
 		}
 	}
 	ds.Graphs[graphName] = sanitisedTriples
+	return nil
+}
+
+// relativeIRIError reports a term that §8.1 and §8.2 leave out of the dataset
+// because it is a relative IRI (no base IRI resolved it).
+func relativeIRIError(position, iri string) error {
+	return NewJsonLdError(InvalidRdfTerm, fmt.Sprintf("%s %q is a relative IRI and has no RDF form", position, iri))
 }
 
 // GetQuads returns a list of quads for the given graph
@@ -307,9 +339,33 @@ func GetCanonicalDouble(v float64) string {
 	return canonicalDoubleRegEx.ReplaceAllString(fmt.Sprintf("%1.15E", v), "${1}E${2}${3}")
 }
 
-var (
-	validLanguageRegex = regexp.MustCompile("^[a-zA-Z]+(-[a-zA-Z0-9]+)*$")
-)
+// wellFormedLanguageTag matches Language-Tag in the RFC 5646 §2.1 ABNF, which
+// BCP 47 §2.2.9 makes the test for a well-formed tag.
+var wellFormedLanguageTag = regexp.MustCompile(`(?i)^(?:` +
+	// langtag: language, script, region, variants, extensions, private use
+	`(?:[a-z]{2,3}(?:-[a-z]{3}){0,3}|[a-z]{4,8})` +
+	`(?:-[a-z]{4})?` +
+	`(?:-(?:[a-z]{2}|[0-9]{3}))?` +
+	`(?:-(?:[a-z0-9]{5,8}|[0-9][a-z0-9]{3}))*` +
+	`(?:-[0-9a-wyz](?:-[a-z0-9]{2,8})+)*` +
+	`(?:-x(?:-[a-z0-9]{1,8})+)?` +
+	// privateuse
+	`|x(?:-[a-z0-9]{1,8})+` +
+	// grandfathered: irregular, then regular
+	`|en-GB-oed|i-ami|i-bnn|i-default|i-enochian|i-hak|i-klingon|i-lux|i-mingo` +
+	`|i-navajo|i-pwn|i-tao|i-tay|i-tsu|sgn-BE-FR|sgn-BE-NL|sgn-CH-DE` +
+	`|art-lojban|cel-gaulish|no-bok|no-nyn|zh-guoyu|zh-hakka|zh-min|zh-min-nan|zh-xiang` +
+	`)$`)
+
+// invalidLiteral reports whether l breaks JSON-LD 1.1 API §8.1: a language
+// tag that is not well-formed, including the empty tag of a language-tagged
+// string, or a datatype IRI that validIRI rejects.
+func invalidLiteral(l Literal, validIRI func(string) bool) bool {
+	if (l.Language != "" || l.Datatype == RDFLangString) && !wellFormedLanguageTag.MatchString(l.Language) {
+		return true
+	}
+	return l.Datatype != "" && !validIRI(l.Datatype)
+}
 
 func InvalidNode(node Node) bool {
 
@@ -319,12 +375,7 @@ func InvalidNode(node Node) bool {
 			return true
 		}
 	case Literal:
-		if v.Language != "" && !validLanguageRegex.MatchString(v.Language) {
-			return true
-		}
-		if v.Datatype != "" && !validIRI(v.Datatype) {
-			return true
-		}
+		return invalidLiteral(v, validIRI)
 	}
 
 	return false
@@ -349,12 +400,7 @@ func (v iriValidity) invalidNode(node Node) bool {
 	case IRI:
 		return !v.validIRI(n.Value)
 	case Literal:
-		if n.Language != "" && !validLanguageRegex.MatchString(n.Language) {
-			return true
-		}
-		if n.Datatype != "" && !v.validIRI(n.Datatype) {
-			return true
-		}
+		return invalidLiteral(n, v.validIRI)
 	}
 	return false
 }
@@ -367,12 +413,10 @@ func (v iriValidity) validQuad(q *Quad) bool {
 		(q.Graph == nil || !v.invalidNode(q.Graph))
 }
 
+// validIRI is the IRI test of JSON-LD 1.1 API §8.1: a quad with an IRI that
+// is not well-formed per RFC 3987 is left out of the dataset.
 func validIRI(val string) bool {
-	if (strings.HasPrefix(val, "http://") || strings.HasPrefix(val, "https://")) && !IsURL(val) {
-		return false
-	}
-
-	return true
+	return wellFormedIRI(val)
 }
 
 /*

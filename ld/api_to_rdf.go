@@ -29,10 +29,15 @@ func (api *JsonLdApi) ToRDF(input interface{}, opts *JsonLdOptions) (*RDFDataset
 	for graphName, graphVal := range nodeMap {
 		// 4.1)
 		if IsRelativeIri(graphName) {
+			if opts.SafeMode {
+				return nil, relativeIRIError("graph name", graphName)
+			}
 			continue
 		}
 		graph := graphVal.(map[string]interface{})
-		dataset.GraphToRDF(graphName, graph, issuer, opts.ProduceGeneralizedRdf)
+		if err := dataset.graphToRDF(graphName, graph, issuer, opts.ProduceGeneralizedRdf, opts.SafeMode); err != nil {
+			return nil, err
+		}
 	}
 
 	return dataset, nil
