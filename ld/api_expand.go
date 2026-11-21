@@ -340,7 +340,12 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 }
 
 func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, expandedActiveProperty string, elem map[string]interface{}, resultMap map[string]interface{}, typeKey string, opts *JsonLdOptions, typeScopedContext *Context, frameExpansion bool, pointer string) error {
-	inputType := elem[typeKey]
+	// typeKey is empty when no key of elem expands to @type. The empty key
+	// cannot be a term, so it never names @type and must not be read here.
+	var inputType interface{}
+	if typeKey != "" {
+		inputType = elem[typeKey]
+	}
 	if inputType != nil {
 		if itArray, isArray := inputType.([]interface{}); isArray {
 			if len(itArray) > 0 {

@@ -71,6 +71,7 @@ const (
 	InvalidNestValue            ErrorCode = "invalid @nest value"
 	InvalidContextNullification ErrorCode = "invalid context nullification"
 	ProtectedTermRedefinition   ErrorCode = "protected term redefinition"
+	InvalidProtectedValue       ErrorCode = "invalid @protected value"
 	InvalidContextEntry         ErrorCode = "invalid context entry"
 	InvalidPropagateValue       ErrorCode = "invalid @propagate value"
 	InvalidBaseDirection        ErrorCode = "invalid base direction"

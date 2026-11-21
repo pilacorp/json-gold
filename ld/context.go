@@ -503,7 +503,11 @@ func (c *Context) parse(localContext interface{}, baseURL string, remote *remote
 		// all its terms to be "protected" (exceptions can be made on a
 		// per-definition basis)
 		if protectedVal, protectedPresent := contextMap["@protected"]; protectedPresent {
-			defined["@protected"] = protectedVal.(bool)
+			protectedBool, isBool := protectedVal.(bool)
+			if !isBool {
+				return nil, NewJsonLdError(InvalidProtectedValue, "@protected must be a boolean")
+			}
+			defined["@protected"] = protectedBool
 		} else if protected {
 			defined["@protected"] = true
 		}
@@ -889,8 +893,16 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 	}
 
 	// handle term protection
-	valProtected, protectedFound := mapValue["@protected"]
-	if (protectedFound && valProtected.(bool)) || (defined["@protected"] && !(protectedFound && !valProtected.(bool))) {
+	// 11) a term's own @protected overrides the context-wide flag.
+	protectTerm := defined["@protected"]
+	if valProtected, protectedFound := mapValue["@protected"]; protectedFound {
+		protectedBool, isBool := valProtected.(bool)
+		if !isBool {
+			return NewJsonLdError(InvalidProtectedValue, "@protected must be a boolean")
+		}
+		protectTerm = protectedBool
+	}
+	if protectTerm {
 		c.Protected[term] = true
 		definition.Protected = true
 	}

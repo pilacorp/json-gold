@@ -287,7 +287,12 @@ func objectToRDF(item interface{}, issuer *IdentifierIssuer, graphName string, t
 			if number, isNumber := value.(json.Number); isNumber {
 				var floatErr error
 				floatVal, floatErr = number.Float64()
-				isFloat = floatErr == nil
+				if floatErr != nil {
+					// Out of float64 range: no xsd:double or xsd:integer can hold it.
+					return nil, triples, NewJsonLdError(InvalidValueObjectValue,
+						fmt.Errorf("number %s: %w", number, floatErr))
+				}
+				isFloat = true
 			}
 		}
 
