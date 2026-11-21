@@ -100,6 +100,9 @@ func TestKeywordLikeIRIInFrame(t *testing.T) {
 }
 
 // In safe mode nothing is turned into null or left out without an error.
+// A value with no subject in its graph is one of them: expansion drops it or
+// it produces no statement. jsonld.js 8.3.3 refuses these in safe mode too,
+// except a value in a @graph @id or @graph @index map, which it keeps.
 func TestSafeModeRejectsLostValues(t *testing.T) {
 	tests := []struct {
 		name, input string
@@ -108,10 +111,25 @@ func TestSafeModeRejectsLostValues(t *testing.T) {
 		{"keyword-like node @id", `{"@id":"urn:s","http://ex.org/p":{"@id":"@foo","http://ex.org/q":"x"}}`, InvalidIDValue},
 		{"keyword-like @type @id value", `{"@context":{"p":{"@id":"http://ex.org/p","@type":"@id"}},"@id":"urn:s","p":"@foo"}`, InvalidIDValue},
 		{"keyword-like @type entry", `{"@id":"urn:s","@type":["@foo","http://ex.org/T"]}`, InvalidTypeValue},
+		{"IRI that is not well-formed", `{"@id":"urn:s","http://ex.org/p":{"@id":"https://ex.org/a|b"}}`, InvalidRdfTerm},
+		{"language tag that is not well-formed", `{"@id":"urn:s","http://ex.org/p":{"@value":"x","@language":"en-a"}}`, InvalidRdfTerm},
 		{"keyword-like @id in @set", `{"@id":"urn:s","http://ex.org/p":{"@set":[{"@id":"@foo"}]}}`, InvalidIDValue},
 		{"keyword-like @id in @list", `{"@id":"urn:s","http://ex.org/p":{"@list":[{"@id":"@foo"}]}}`, InvalidIDValue},
 		{"keyword-like @id map key", `{"@context":{"p":{"@id":"http://ex.org/p","@container":"@id"}},"@id":"urn:s","p":{"@foo":{"http://ex.org/q":"x"}}}`, InvalidIDValue},
 		{"keyword-like @type map key", `{"@context":{"p":{"@id":"http://ex.org/p","@container":"@type"}},"@id":"urn:s","p":{"@foo":{"http://ex.org/q":"x"}}}`, InvalidTypeValue},
+		{"relative subject", `{"@id":"s","http://ex.org/p":"x"}`, InvalidRdfTerm},
+		{"relative object", `{"@id":"urn:s","http://ex.org/p":{"@id":"o"}}`, InvalidRdfTerm},
+		{"relative list item", `{"@id":"urn:s","http://ex.org/p":{"@list":[{"@id":"o"}]}}`, InvalidRdfTerm},
+		{"relative graph name", `{"@id":"g","@graph":[{"@id":"urn:s","http://ex.org/p":"x"}]}`, InvalidRdfTerm},
+		{"string under a @graph container", `{"@context":{"vc":{"@id":"http://ex.org/vc","@container":"@graph","@context":null}},"@id":"urn:vp","vc":["eyJhbGciOi.jwt"]}`, InvalidValueObject},
+		{"IRI under a @graph container", `{"@context":{"vc":{"@id":"http://ex.org/vc","@type":"@id","@container":"@graph"}},"@id":"urn:vp","vc":"urn:uuid:abc"}`, InvalidIDValue},
+		{"list under a @graph container", `{"@context":{"vc":{"@id":"http://ex.org/vc","@container":"@graph"}},"@id":"urn:vp","vc":{"@list":["a"]}}`, InvalidSetOrListObject},
+		{"string under a @graph @id map", `{"@context":{"vc":{"@id":"http://ex.org/vc","@container":["@graph","@id"]}},"@id":"urn:vp","vc":{"urn:g":"jwt"}}`, InvalidValueObject},
+		{"scalar in @graph", `{"@id":"urn:g","@graph":["x",{"@id":"urn:s","http://ex.org/p":"x"}]}`, InvalidValueObject},
+		{"value object in @graph", `{"@id":"urn:g","@graph":[{"@value":"x"},{"@id":"urn:s","http://ex.org/p":"x"}]}`, InvalidValueObject},
+		{"node with only @id", `[{"@id":"urn:a"},{"@id":"urn:s","http://ex.org/p":"x"}]`, InvalidIDValue},
+		{"top-level list", `[{"@list":["a"]},{"@id":"urn:s","http://ex.org/p":"x"}]`, InvalidSetOrListObject},
+		{"object with only @language", `{"@id":"urn:s","http://ex.org/p":{"@language":"en"},"http://ex.org/q":"x"}`, InvalidValueObject},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -175,4 +193,25 @@ func TestSecondTypeKeyAddsTypes(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out, 1)
 	assert.ElementsMatch(t, []interface{}{"http://ex.org/Admin", "http://ex.org/B"}, out[0].(map[string]interface{})["@type"])
+}
+
+// A frame is a pattern, so safe mode does not refuse its free-floating parts:
+// a wildcard frame frames the same as without safe mode (jsonld.js 8.3.3
+// agrees).
+func TestSafeModeFrameKeepsWildcard(t *testing.T) {
+	var in interface{}
+	require.NoError(t, json.Unmarshal([]byte(`{"@id":"http://ex.org/s","http://ex.org/p":"x"}`), &in))
+	for _, f := range []string{`{}`, `{"@graph":[{}]}`, `{"@context":{"g":{"@id":"http://ex.org/g","@container":["@graph","@id"]}},"g":{"urn:g":{}}}`} {
+		t.Run(f, func(t *testing.T) {
+			var frame interface{}
+			require.NoError(t, json.Unmarshal([]byte(f), &frame))
+			want, err := NewJsonLdProcessor().Frame(in, frame, NewJsonLdOptions(""))
+			require.NoError(t, err)
+			opts := NewJsonLdOptions("")
+			opts.SafeMode = true
+			got, err := NewJsonLdProcessor().Frame(in, frame, opts)
+			require.NoError(t, err)
+			assert.Equal(t, want, got)
+		})
+	}
 }

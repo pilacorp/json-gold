@@ -89,7 +89,10 @@ const (
 	ParseError      ErrorCode = "parse error"
 	IOError         ErrorCode = "io error"
 	InvalidProperty ErrorCode = "invalid property"
-	UnknownError    ErrorCode = "unknown error"
+	// InvalidRdfTerm is raised in safe mode when a statement would be left
+	// out of the dataset for an IRI or language tag that is not well-formed.
+	InvalidRdfTerm ErrorCode = "invalid RDF term"
+	UnknownError   ErrorCode = "unknown error"
 )
 
 func (e JsonLdError) Error() string {

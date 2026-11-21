@@ -229,11 +229,22 @@ var nilIRI = NewIRI(RDFNil)
 // GraphToRDF creates an array of RDF triples for the given graph.
 func (ds *RDFDataset) GraphToRDF(graphName string, graph map[string]interface{}, issuer *IdentifierIssuer,
 	produceGeneralizedRdf bool) error {
+	return ds.graphToRDF(graphName, graph, issuer, produceGeneralizedRdf, false)
+}
+
+// graphToRDF is GraphToRDF. With safeMode, a statement left out because an
+// IRI or language tag is not well-formed (§8.1) is an error instead, so the
+// caller does not sign or verify a dataset that silently lost data.
+func (ds *RDFDataset) graphToRDF(graphName string, graph map[string]interface{}, issuer *IdentifierIssuer,
+	produceGeneralizedRdf, safeMode bool) error {
 	// 4.2)
 	triples := make([]*Quad, 0)
 	// 4.3)
 	for _, id := range GetKeys(graph) {
 		if IsRelativeIri(id) {
+			if safeMode {
+				return relativeIRIError("subject", id)
+			}
 			continue
 		}
 
@@ -252,6 +263,9 @@ func (ds *RDFDataset) GraphToRDF(graphName string, graph map[string]interface{},
 				continue
 			} else if IsRelativeIri(property) {
 				// 4.3.2.4)
+				if safeMode {
+					return relativeIRIError("predicate", property)
+				}
 				continue
 			} else {
 				values = node[property].([]interface{})
@@ -276,7 +290,7 @@ func (ds *RDFDataset) GraphToRDF(graphName string, graph map[string]interface{},
 			for _, item := range values {
 				var object Node
 				var err error
-				object, triples, err = objectToRDF(item, issuer, graphName, triples)
+				object, triples, err = objectToRDF(item, issuer, graphName, triples, safeMode)
 				if err != nil {
 					return err
 				}
@@ -297,10 +311,20 @@ func (ds *RDFDataset) GraphToRDF(graphName string, graph map[string]interface{},
 	for _, t := range triples {
 		if v.validQuad(t) {
 			sanitisedTriples = append(sanitisedTriples, t)
+		} else if safeMode {
+			return NewJsonLdError(InvalidRdfTerm, fmt.Sprintf(
+				"statement about %q with predicate %q has an IRI or language tag that is not well-formed",
+				t.Subject.GetValue(), t.Predicate.GetValue()))
 		}
 	}
 	ds.Graphs[graphName] = sanitisedTriples
 	return nil
+}
+
+// relativeIRIError reports a term that §8.1 and §8.2 leave out of the dataset
+// because it is a relative IRI (no base IRI resolved it).
+func relativeIRIError(position, iri string) error {
+	return NewJsonLdError(InvalidRdfTerm, fmt.Sprintf("%s %q is a relative IRI and has no RDF form", position, iri))
 }
 
 // GetQuads returns a list of quads for the given graph

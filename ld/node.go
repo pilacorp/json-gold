@@ -255,7 +255,7 @@ func rdfToObject(n Node, useNativeTypes bool, jsonLiterals bool) (map[string]int
 
 // objectToRDF converts a JSON-LD value object to an RDF literal or a JSON-LD string or
 // node object to an RDF resource.
-func objectToRDF(item interface{}, issuer *IdentifierIssuer, graphName string, triples []*Quad) (Node, []*Quad, error) {
+func objectToRDF(item interface{}, issuer *IdentifierIssuer, graphName string, triples []*Quad, safeMode bool) (Node, []*Quad, error) {
 	// convert value object to RDF
 	if IsValue(item) {
 		itemMap := item.(map[string]interface{})
@@ -358,13 +358,16 @@ func objectToRDF(item interface{}, issuer *IdentifierIssuer, graphName string, t
 		// if item is a list object, initialize list_results as an empty array,
 		// and object to the result of the List Conversion algorithm, passing
 		// the value associated with the @list key from item and list_results.
-		return parseList(item.(map[string]interface{})["@list"].([]interface{}), issuer, graphName, triples)
+		return parseList(item.(map[string]interface{})["@list"].([]interface{}), issuer, graphName, triples, safeMode)
 	} else {
 		// convert string/node object to RDF
 		var id string
 		if itemMap, isMap := item.(map[string]interface{}); isMap {
 			id = itemMap["@id"].(string)
 			if IsRelativeIri(id) {
+				if safeMode {
+					return nil, triples, relativeIRIError("object", id)
+				}
 				return nil, triples, nil
 			}
 		} else {
@@ -379,7 +382,7 @@ func objectToRDF(item interface{}, issuer *IdentifierIssuer, graphName string, t
 	}
 }
 
-func parseList(list []interface{}, issuer *IdentifierIssuer, graphName string, triples []*Quad) (Node, []*Quad, error) {
+func parseList(list []interface{}, issuer *IdentifierIssuer, graphName string, triples []*Quad, safeMode bool) (Node, []*Quad, error) {
 
 	var res Node
 	var last interface{}
@@ -396,7 +399,7 @@ func parseList(list []interface{}, issuer *IdentifierIssuer, graphName string, t
 	var obj Node
 	var err error
 	for i := 0; i < len(list)-1; i++ {
-		obj, triples, err = objectToRDF(list[i], issuer, graphName, triples)
+		obj, triples, err = objectToRDF(list[i], issuer, graphName, triples, safeMode)
 		if err != nil {
 			return nil, triples, err
 		}
@@ -412,7 +415,7 @@ func parseList(list []interface{}, issuer *IdentifierIssuer, graphName string, t
 
 	// tail of list
 	if last != nil {
-		obj, triples, err = objectToRDF(last, issuer, graphName, triples)
+		obj, triples, err = objectToRDF(last, issuer, graphName, triples, safeMode)
 		if err != nil {
 			return nil, triples, err
 		}

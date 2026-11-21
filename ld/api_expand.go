@@ -311,6 +311,9 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 		}
 		// 11)
 		if _, hasLanguage := resultMap["@language"]; hasLanguage && len(resultMap) == 1 {
+			if opts != nil && opts.SafeMode && opts.ProcessingMode != JsonLd_1_1_Frame {
+				return nil, NewJsonLdError(InvalidValueObject, "an object with only @language has no value and would be dropped")
+			}
 			resultMap = nil
 		}
 		// 12)
@@ -320,8 +323,14 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 			_, hasList := resultMap["@list"]
 			_, hasID := resultMap["@id"]
 			if resultMap != nil && (len(resultMap) == 0 || hasValue || hasList) {
+				if err := refuseFreeFloating(opts, resultMap); err != nil {
+					return nil, err
+				}
 				resultMap = nil
 			} else if resultMap != nil && !frameExpansion && hasID && len(resultMap) == 1 { // 12.2)
+				if err := refuseFreeFloating(opts, resultMap); err != nil {
+					return nil, err
+				}
 				resultMap = nil
 			}
 		}
@@ -342,7 +351,7 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 		// 2) If element is a scalar
 		// 2.1)
 		if activeProperty == "" || activeProperty == "@graph" {
-			return nil, nil
+			return nil, refuseFreeFloating(opts, element)
 		}
 		return activeCtx.ExpandValue(activeProperty, element)
 	}
@@ -643,6 +652,9 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 			} else if expandedProperty == "@list" { // 7.4.9)
 				// 7.4.9.1)
 				if activeProperty == "" || activeProperty == "@graph" {
+					if err := refuseFreeFloating(opts, map[string]interface{}{"@list": value}); err != nil {
+						return err
+					}
 					continue
 				}
 				// 7.4.9.2)
@@ -905,6 +917,11 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 			evList := Arrayify(expandedValue)
 			rVal := make([]interface{}, 0)
 			for _, ev := range evList {
+				if isFreeFloating(ev) {
+					if err := refuseFreeFloating(opts, ev); err != nil {
+						return err
+					}
+				}
 				ev = map[string]interface{}{
 					"@graph": Arrayify(ev),
 				}
@@ -1101,6 +1118,11 @@ func (api *JsonLdApi) expandIndexMap(activeCtx *Context, activeProperty string, 
 		// 7.6.2.3)
 		for _, itemValue := range indexValue.([]interface{}) {
 			if asGraph && !IsGraph(itemValue) {
+				if isFreeFloating(itemValue) {
+					if err := refuseFreeFloating(opts, itemValue); err != nil {
+						return nil, err
+					}
+				}
 				itemValue = map[string]interface{}{
 					"@graph": Arrayify(itemValue),
 				}
@@ -1143,4 +1165,37 @@ func (api *JsonLdApi) expandIndexMap(activeCtx *Context, activeProperty string, 
 		}
 	}
 	return expandedValueList, nil
+}
+
+// isFreeFloating reports whether v, placed directly in a graph, has no
+// subject to attach to: a value or list object, an empty map, or a node with
+// only @id (§5.1.2 step 19.1). A @graph container puts each of its values in
+// a graph (step 13.8.3), where such a value produces no RDF statement.
+func isFreeFloating(v interface{}) bool {
+	m, isMap := v.(map[string]interface{})
+	if !isMap {
+		return true
+	}
+	if _, hasID := m["@id"]; hasID && len(m) == 1 {
+		return true
+	}
+	return len(m) == 0 || IsValue(m) || IsList(m)
+}
+
+// refuseFreeFloating returns an error in safe mode for a free-floating value
+// that expansion drops or that produces no statement, since the caller would
+// otherwise sign or verify a dataset without it. Otherwise it returns nil.
+// A frame is a pattern, not data, so frame expansion keeps it quiet, as
+// jsonld.js does with keepFreeFloatingNodes.
+func refuseFreeFloating(opts *JsonLdOptions, v interface{}) error {
+	if opts == nil || !opts.SafeMode || opts.ProcessingMode == JsonLd_1_1_Frame {
+		return nil
+	}
+	code, kind := InvalidValueObject, "a value"
+	if IsList(v) {
+		code, kind = InvalidSetOrListObject, "a list object"
+	} else if m, isMap := v.(map[string]interface{}); isMap && !IsValue(m) {
+		code, kind = InvalidIDValue, "a node object with no property"
+	}
+	return NewJsonLdError(code, kind+" directly in a graph has no subject and would be dropped")
 }

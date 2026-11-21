@@ -66,7 +66,14 @@ type JsonLdOptions struct { //nolint:stylecheck
 	Algorithm     string
 	UseNamespaces bool
 	OutputForm    string
-	SafeMode      bool
+
+	// SafeMode turns these silent drops into errors: an undefined term, a
+	// keyword-like IRI, an IRI or language tag that is not well-formed, a
+	// relative IRI in a statement, an object with only @language, and a value
+	// with no subject in its graph. The last also refuses a node with only @id
+	// at the top level or in @graph, and a document with only @context, as
+	// jsonld.js does. A frame passed to Frame is a pattern and is not checked.
+	SafeMode bool
 
 	// MaxRemoteContexts is the processor limit of JSON-LD 1.1 API §4.1.2
 	// step 5.2.3: how many remote contexts one @context value may process,
