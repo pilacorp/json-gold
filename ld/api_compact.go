@@ -50,7 +50,7 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 
 	// use any scoped context on activeProperty
 	if td := activeCtx.GetTermDefinition(activeProperty); td != nil && td.HasContext {
-		newCtx, err := activeCtx.parse(td.Context, td.BaseURL, make([]string, 0), false, true, false, true)
+		newCtx, err := activeCtx.parse(td.Context, td.BaseURL, nil, false, true, false, true)
 		if err != nil {
 			return nil, err
 		}

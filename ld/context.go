@@ -206,11 +206,22 @@ func CopyContext(ctx *Context) *Context {
 // than just parsing the context. In particular, we need to check if additional logic is required
 // to load remote scoped contexts.
 func (c *Context) Parse(localContext interface{}) (*Context, error) {
-	return c.parse(localContext, c.Values.Base, make([]string, 0), false, true, false, false)
+	return c.parse(localContext, c.Values.Base, nil, false, true, false, false)
 }
 
-// maxRemoteContextDepth bounds how deeply remote contexts may nest.
-const maxRemoteContextDepth = 32
+// maxRemoteContexts is the processor-defined limit of JSON-LD 1.1 API
+// §4.1.2 step 5.2.3 on remote contexts processed in one context
+// processing, counted across nesting and siblings so that a cycle or a
+// context listing its child twice per level ends early.
+const maxRemoteContexts = 256
+
+// remoteContexts tracks the remote contexts of one context processing:
+// each URL is dereferenced once (step 5.2.4) and every processed remote
+// context counts toward maxRemoteContexts.
+type remoteContexts struct {
+	loaded    map[string]*RemoteDocument
+	processed int
+}
 
 // parse processes a local context, retrieving any URLs as necessary, and
 // returns a new active context.
@@ -218,8 +229,11 @@ const maxRemoteContextDepth = 32
 // If parsingARemoteContext is true, localContext represents a remote context
 // that has been parsed and sent into this method. This must be set to know
 // whether to propagate the @base key from the context to the result.
-func (c *Context) parse(localContext interface{}, baseURL string, remoteContexts []string, parsingARemoteContext, propagate,
+func (c *Context) parse(localContext interface{}, baseURL string, remote *remoteContexts, parsingARemoteContext, propagate,
 	protected, overrideProtected bool) (*Context, error) { //nolint:unparam
+	if remote == nil {
+		remote = &remoteContexts{loaded: make(map[string]*RemoteDocument)}
+	}
 
 	// normalize local context to an array of @context objects
 	contexts := Arrayify(localContext)
@@ -274,17 +288,26 @@ func (c *Context) parse(localContext interface{}, baseURL string, remoteContexts
 		// 3.2)
 		case string:
 			uri := Resolve(baseURL, ctx)
-			// JSON-LD 1.1 §4.1.2 step 5.2.2: a repeated context is processed
-			// again, so only the nesting depth is limited; a cycle reaches it.
-			if len(remoteContexts) >= maxRemoteContextDepth {
+			// JSON-LD 1.1 §4.1.2 step 5.2.3. JSON-LD 1.0 names the same
+			// condition a recursive context inclusion.
+			if remote.processed >= maxRemoteContexts {
+				if result.processingMode(1.0) {
+					return nil, NewJsonLdError(RecursiveContextInclusion, uri)
+				}
 				return nil, NewJsonLdError(ContextOverflow, uri)
 			}
+			remote.processed++
 
-			// 3.2.3: Dereference context
-			rd, err := c.options.DocumentLoader.LoadDocument(uri)
-			if err != nil {
-				return nil, NewJsonLdError(LoadingRemoteContextFailed,
-					fmt.Errorf("dereferencing a URL did not result in a valid JSON-LD context (%s): %w", uri, err))
+			// 3.2.3: Dereference context, once per URL (step 5.2.4)
+			rd, loaded := remote.loaded[uri]
+			if !loaded {
+				var err error
+				rd, err = c.options.DocumentLoader.LoadDocument(uri)
+				if err != nil {
+					return nil, NewJsonLdError(LoadingRemoteContextFailed,
+						fmt.Errorf("dereferencing a URL did not result in a valid JSON-LD context (%s): %w", uri, err))
+				}
+				remote.loaded[uri] = rd
 			}
 			remoteContextMap, isMap := rd.Document.(map[string]interface{})
 			context, hasContextKey := remoteContextMap["@context"]
@@ -294,9 +317,6 @@ func (c *Context) parse(localContext interface{}, baseURL string, remoteContexts
 				return nil, NewJsonLdError(InvalidRemoteContext, context)
 			}
 
-			// 3.2.4: each nested context gets its own copy, so sibling
-			// contexts in one array do not count toward the depth.
-			nested := append(remoteContexts[:len(remoteContexts):len(remoteContexts)], uri)
 			// JSON-LD 1.1 §4.1.2 step 5.2.6: process the remote context
 			// with the documentUrl of the loaded context as base, so that
 			// @import and nested context IRIs resolve next to it even after
@@ -305,7 +325,7 @@ func (c *Context) parse(localContext interface{}, baseURL string, remoteContexts
 			if ctxBase == "" {
 				ctxBase = uri
 			}
-			resultRef, err := result.parse(context, ctxBase, nested, true, true, false, overrideProtected)
+			resultRef, err := result.parse(context, ctxBase, remote, true, true, false, overrideProtected)
 			if err != nil {
 				return nil, err
 			}

@@ -2,6 +2,7 @@ package ld
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -179,5 +180,83 @@ func TestRemoteContextRepeatedInArray(t *testing.T) {
 	want := "<urn:s:1> <https://example.org/y> \"2\" .\n"
 	if out.(string) != want {
 		t.Fatalf("got %q, want %q", out, want)
+	}
+}
+
+// Each level lists the next one twice, so a processor that walks every
+// path does 2^30 loads. The total number of remote contexts in one
+// context processing is limited, so this ends in "context overflow" at once.
+func TestRemoteContextFanOutIsBounded(t *testing.T) {
+	docs := map[string]interface{}{}
+	for i := 0; i < 30; i++ {
+		next := fmt.Sprintf("l%d.jsonld", i+1)
+		docs[fmt.Sprintf("https://example.org/l%d.jsonld", i)] = map[string]interface{}{"@context": []interface{}{next, next}}
+	}
+	docs["https://example.org/l30.jsonld"] = map[string]interface{}{"@context": map[string]interface{}{"y": "https://example.org/y"}}
+	opts := NewJsonLdOptions("https://example.org/doc.jsonld")
+	opts.DocumentLoader = &urlDocumentLoader{docs: docs}
+	_, err := NewJsonLdProcessor().Expand(map[string]interface{}{
+		"@context": "https://example.org/l0.jsonld",
+		"@id":      "urn:s:1",
+	}, opts)
+	var ldErr *JsonLdError
+	if !errors.As(err, &ldErr) || ldErr.Code != ContextOverflow {
+		t.Fatalf("got %v, want %q", err, ContextOverflow)
+	}
+}
+
+// JSON-LD 1.1 API §4.1.2 step 5.2.4: a context already dereferenced MUST
+// NOT be dereferenced again.
+func TestRemoteContextDereferencedOnce(t *testing.T) {
+	loader := &urlDocumentLoader{docs: map[string]interface{}{
+		"https://example.org/a.jsonld": map[string]interface{}{
+			"@context": map[string]interface{}{"y": "https://example.org/y"},
+		},
+	}}
+	opts := NewJsonLdOptions("https://example.org/doc.jsonld")
+	opts.DocumentLoader = loader
+	_, err := NewJsonLdProcessor().Expand(map[string]interface{}{
+		"@context": []interface{}{"https://example.org/a.jsonld", "https://example.org/a.jsonld"},
+		"@id":      "urn:s:1",
+	}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loader.got) != 1 {
+		t.Fatalf("loaded %v, want one load", loader.got)
+	}
+}
+
+// Many sibling contexts in one array stay under the limit.
+func TestRemoteContextManySiblings(t *testing.T) {
+	docs := map[string]interface{}{}
+	ctx := []interface{}{}
+	for i := 0; i < 40; i++ {
+		u := fmt.Sprintf("https://example.org/s%d.jsonld", i)
+		docs[u] = map[string]interface{}{"@context": map[string]interface{}{fmt.Sprintf("t%d", i): "https://example.org/t"}}
+		ctx = append(ctx, u)
+	}
+	opts := NewJsonLdOptions("https://example.org/doc.jsonld")
+	opts.DocumentLoader = &urlDocumentLoader{docs: docs}
+	if _, err := NewJsonLdProcessor().Expand(map[string]interface{}{"@context": ctx, "@id": "urn:s:1"}, opts); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// JSON-LD 1.0 reports a context cycle as "recursive context inclusion".
+func TestRemoteContextCycleInJSONLD10(t *testing.T) {
+	loader := &urlDocumentLoader{docs: map[string]interface{}{
+		"https://example.org/a.jsonld": map[string]interface{}{"@context": "a.jsonld"},
+	}}
+	opts := NewJsonLdOptions("https://example.org/doc.jsonld")
+	opts.DocumentLoader = loader
+	opts.ProcessingMode = JsonLd_1_0
+	_, err := NewJsonLdProcessor().Expand(map[string]interface{}{
+		"@context": "https://example.org/a.jsonld",
+		"@id":      "urn:s:1",
+	}, opts)
+	var ldErr *JsonLdError
+	if !errors.As(err, &ldErr) || ldErr.Code != RecursiveContextInclusion {
+		t.Fatalf("got %v, want %q", err, RecursiveContextInclusion)
 	}
 }

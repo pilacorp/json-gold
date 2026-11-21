@@ -692,7 +692,7 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 		if td != nil && td.HasContext {
 			// TODO: fix calling a private method
 			//termCtx, err = activeCtx.Parse(ctx)
-			termCtx, err = activeCtx.parse(td.Context, td.BaseURL, make([]string, 0), false, true, false, true)
+			termCtx, err = activeCtx.parse(td.Context, td.BaseURL, nil, false, true, false, true)
 			if err != nil {
 				return err
 			}
@@ -946,7 +946,7 @@ func (api *JsonLdApi) expandIndexMap(activeCtx *Context, activeProperty string, 
 		indexCtx := activeCtx
 		// if indexKey is @type, there may be a context defined for it
 		if td := activeCtx.GetTermDefinition(key); indexKey == "@type" && td != nil && td.HasContext {
-			newCtx, err := activeCtx.parse(td.Context, td.BaseURL, make([]string, 0), false, true, false, false)
+			newCtx, err := activeCtx.parse(td.Context, td.BaseURL, nil, false, true, false, false)
 			if err != nil {
 				return nil, err
 			}
