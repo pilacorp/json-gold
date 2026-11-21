@@ -207,7 +207,10 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 
 			if expandedProperty == "@reverse" {
 
-				compactedObject, _ := api.Compact(activeCtx, "@reverse", expandedValue, compactArrays)
+				compactedObject, err := api.Compact(activeCtx, "@reverse", expandedValue, compactArrays)
+				if err != nil {
+					return nil, err
+				}
 				compactedValue := compactedObject.(map[string]interface{})
 
 				for _, property := range GetKeys(compactedValue) {
@@ -236,7 +239,10 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 
 			if expandedProperty == "@preserve" {
 				// compact using activeProperty
-				compactedValue, _ := api.Compact(activeCtx, activeProperty, expandedValue, compactArrays)
+				compactedValue, err := api.Compact(activeCtx, activeProperty, expandedValue, compactArrays)
+				if err != nil {
+					return nil, err
+				}
 				if cva, isArray := compactedValue.([]interface{}); !(isArray && len(cva) == 0) {
 					AddValue(result, expandedProperty, compactedValue, false, false, true, false)
 				}
@@ -620,7 +626,11 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 // checkNestProperty ensures that the value of `@nest` in the term definition must
 // either be "@nest", or a term which resolves to "@nest".
 func (api *JsonLdApi) checkNestProperty(activeCtx *Context, nestProperty string) error {
-	if v, _ := activeCtx.ExpandIri(nestProperty, false, true, nil, nil); v != "@nest" {
+	v, err := activeCtx.ExpandIri(nestProperty, false, true, nil, nil)
+	if err != nil {
+		return err
+	}
+	if v != "@nest" {
 		return NewJsonLdError(InvalidNestValue, "nested property must have an @nest value resolving to @nest")
 	}
 	return nil

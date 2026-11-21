@@ -646,13 +646,19 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 					continue
 				}
 				// 7.4.9.2)
-				expandedValue, _ = api.expandElement(activeCtx, activeProperty, value, opts, false, nil, keyPointer)
+				expandedValue, err = api.expandElement(activeCtx, activeProperty, value, opts, false, nil, keyPointer)
+				if err != nil {
+					return err
+				}
 
 				// NOTE: step not in the spec yet
 				expandedValue = Arrayify(expandedValue)
 
 			} else if expandedProperty == "@set" { // 7.4.10)
-				expandedValue, _ = api.expandElement(activeCtx, activeProperty, value, opts, false, nil, keyPointer)
+				expandedValue, err = api.expandElement(activeCtx, activeProperty, value, opts, false, nil, keyPointer)
+				if err != nil {
+					return err
+				}
 			} else if expandedProperty == "@reverse" { // 7.4.11)
 				_, isMap := value.(map[string]interface{})
 				if !isMap {
@@ -740,7 +746,10 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 				// nested keys
 				nests = append(nests, key)
 			} else if expandedProperty == "@default" {
-				expandedValue, _ = api.expandElement(activeCtx, expandedProperty, value, opts, false, nil, keyPointer)
+				expandedValue, err = api.expandElement(activeCtx, expandedProperty, value, opts, false, nil, keyPointer)
+				if err != nil {
+					return err
+				}
 			} else if expandedProperty == "@explicit" ||
 				expandedProperty == "@embed" ||
 				expandedProperty == "@requireAll" ||

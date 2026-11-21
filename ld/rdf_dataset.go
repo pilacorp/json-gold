@@ -202,7 +202,10 @@ func (ds *RDFDataset) ParseContext(contextLike interface{}, opts *JsonLdOptions)
 	context := NewContext(nil, opts)
 
 	// Context will do our recursive parsing and initial IRI resolution
-	context, _ = context.Parse(contextLike)
+	context, err := context.Parse(contextLike)
+	if err != nil {
+		return err
+	}
 	// And then leak to us the potential 'prefixes'
 	prefixes := context.GetPrefixes(true)
 

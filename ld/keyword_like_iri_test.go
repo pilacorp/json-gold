@@ -105,6 +105,8 @@ func TestSafeModeRejectsLostValues(t *testing.T) {
 		{"keyword-like node @id", `{"@id":"urn:s","http://ex.org/p":{"@id":"@foo","http://ex.org/q":"x"}}`, InvalidIDValue},
 		{"keyword-like @type @id value", `{"@context":{"p":{"@id":"http://ex.org/p","@type":"@id"}},"@id":"urn:s","p":"@foo"}`, InvalidIDValue},
 		{"keyword-like @type entry", `{"@id":"urn:s","@type":["@foo","http://ex.org/T"]}`, InvalidTypeValue},
+		{"keyword-like @id in @set", `{"@id":"urn:s","http://ex.org/p":{"@set":[{"@id":"@foo"}]}}`, InvalidIDValue},
+		{"keyword-like @id in @list", `{"@id":"urn:s","http://ex.org/p":{"@list":[{"@id":"@foo"}]}}`, InvalidIDValue},
 		{"keyword-like @id map key", `{"@context":{"p":{"@id":"http://ex.org/p","@container":"@id"}},"@id":"urn:s","p":{"@foo":{"http://ex.org/q":"x"}}}`, InvalidIDValue},
 		{"keyword-like @type map key", `{"@context":{"p":{"@id":"http://ex.org/p","@container":"@type"}},"@id":"urn:s","p":{"@foo":{"http://ex.org/q":"x"}}}`, InvalidTypeValue},
 	}
