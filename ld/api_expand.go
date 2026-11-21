@@ -257,6 +257,9 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 							"only strings may be language-tagged")
 					}
 				}
+			} else if _, isArray := typeValue.([]interface{}); hasType && isArray && !frameExpansion {
+				// §5.1.2 step 15: a value object's @type must be one IRI.
+				return nil, NewJsonLdError(InvalidTypedValue, "the @type of a value object must be a single IRI")
 			} else if hasType {
 				types := Arrayify(typeValue)
 				if activeCtx.processingMode(1.1) && len(types) == 1 && types[0] == "@json" {
@@ -264,7 +267,9 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 				} else {
 					for _, v := range types {
 						vStr, isString := v.(string)
-						if !(isEmptyObject(v) || (isString && IsAbsoluteIri(vStr) && !strings.HasPrefix(vStr, "_:"))) {
+						// JSON-LD 1.1 API §5.1.2 step 15: the datatype must be an IRI,
+						// which RFC 3987 defines; a blank node identifier is not one.
+						if !(isEmptyObject(v) || (isString && wellFormedIRI(vStr))) {
 							return nil, NewJsonLdError(InvalidTypedValue,
 								"an element containing @value and @type must have an absolute IRI for the value of @type")
 						}
