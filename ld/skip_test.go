@@ -61,17 +61,6 @@ var skippedTests = map[string][]string{
 		"#ter52", // TODO: new test
 		"#ter54", // TODO: new test
 		"#ter56", // TODO: new test
-		"#tjs03", // TODO numeric format
-		"#tjs07",
-		"#tjs08",
-		"#tjs14",
-		"#tjs15",
-		"#tjs16",
-		"#tjs17",
-		"#tjs18",
-		"#tjs21",
-		"#tjs22",
-		"#tjs23",
 		"#tli11", // TODO: New test
 		"#tli12", // TODO: New test
 		"#tli14", // TODO: New test
