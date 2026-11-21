@@ -2512,7 +2512,10 @@ func (c *Context) ExpandValue(activeProperty string, value interface{}) (interfa
 	return rval, nil
 }
 
-// Serialize transforms the context back into JSON form.
+// Serialize transforms the context back into JSON form. It writes only
+// @id, @reverse, @type, @container and @language of each term, and
+// @container and @protected of @type, so the result is not a full copy of
+// the context it was parsed from.
 func (c *Context) Serialize() (map[string]interface{}, error) {
 	if c.base != nil {
 		return c.flat().Serialize()

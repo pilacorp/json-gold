@@ -92,13 +92,7 @@ func (jldp *JsonLdProcessor) Compact(input interface{}, context interface{},
 	}
 
 	if compactedMap, isMap := compacted.(map[string]interface{}); len(compactedMap) > 0 && isMap {
-		if contextList, isList := context.([]interface{}); isList && len(contextList) == 1 && opts.CompactArrays {
-			// if the context is an array with 1 element, compact the array
-			compactedMap["@context"] = contextList[0]
-		} else if contextMap, isMap := context.(map[string]interface{}); len(contextMap) > 0 || !isMap {
-			// otherwise keep the context as is
-			compactedMap["@context"] = context
-		}
+		setOutputContext(compactedMap, context, opts.CompactArrays)
 	}
 
 	// 9)
@@ -258,6 +252,16 @@ func (jldp *JsonLdProcessor) expandInput(in *apiInput, opts *JsonLdOptions) ([]i
 	return []interface{}{expanded}, nil
 }
 
+// setOutputContext adds the context provided to compacted output, as JSON-LD
+// 1.1 API §9.1 compact() step 9.3 does. An empty context is left out.
+func setOutputContext(output map[string]interface{}, context interface{}, compactArrays bool) {
+	if contextList, isList := context.([]interface{}); isList && len(contextList) == 1 && compactArrays {
+		output["@context"] = contextList[0]
+	} else if contextMap, isMap := context.(map[string]interface{}); len(contextMap) > 0 || !isMap {
+		output["@context"] = context
+	}
+}
+
 // Flatten operation flattens the given input and compacts it using the passed context
 // according to the steps in the Flattening algorithm:
 // http://www.w3.org/TR/json-ld-api/#flattening-algorithm
@@ -279,7 +283,8 @@ func (jldp *JsonLdProcessor) Flatten(input interface{}, context interface{}, opt
 		return nil, err
 	}
 	opts.Base = in.baseIRI(opts)
-	// 7)
+	// 7) the output keeps its own copy of the context, as in Compact.
+	context = CloneDocument(context)
 	contextMap, isMap := context.(map[string]interface{})
 	innerCtx, hasCtx := contextMap["@context"]
 	if isMap && hasCtx {
@@ -343,7 +348,7 @@ func (jldp *JsonLdProcessor) Flatten(input interface{}, context interface{}, opt
 	}
 	// 8)
 	if context != nil && len(flattened) > 0 {
-		// §9.1 flatten() step 6 compacts the flattened output, not a remote
+		// §9.1 flatten() step 6.1 compacts the flattened output, not a remote
 		// document, so compact() step 5 takes the base option as context
 		// base. Without one, opts.Base holds the input's documentUrl.
 		activeCtx := newCallContext(opts)
@@ -357,6 +362,8 @@ func (jldp *JsonLdProcessor) Flatten(input interface{}, context interface{}, opt
 			return nil, err
 		}
 
+		// The output always holds the default graph in @graph, even for one
+		// node: JSON-LD 1.1 API §2.3 and the 1.0 Flattening Algorithm step 8.
 		if _, isList := compacted.([]interface{}); !isList {
 			compacted = []interface{}{compacted}
 		}
@@ -364,11 +371,8 @@ func (jldp *JsonLdProcessor) Flatten(input interface{}, context interface{}, opt
 		if err != nil {
 			return nil, err
 		}
-		rval, err := activeCtx.Serialize()
-		if err != nil {
-			return nil, err
-		}
-		rval[alias] = compacted
+		rval := map[string]interface{}{alias: compacted}
+		setOutputContext(rval, context, opts.CompactArrays)
 		return rval, nil
 	}
 	return flattened, nil
