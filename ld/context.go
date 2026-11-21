@@ -51,6 +51,10 @@ type Context struct {
 	inverse         map[string]interface{} // cache for inverse context
 	previousContext *Context
 	fastCurieMap    map[string]interface{}
+
+	// termBaseURL is the base URL of the local context whose terms are
+	// being defined; createTermDefinition stores it in each definition.
+	termBaseURL string
 }
 
 type Values struct {
@@ -80,6 +84,7 @@ type TermDefinition struct {
 	HasDirection bool     // Indicates if the @direction key is set (might be set to "null" which has a different semantic than being just absent, i.e. nil)
 	Language     *string  // The @language mapping for the term (optional)
 	HasLanguage  bool     // Indicates if the term explicitly specifies a language
+	BaseURL      string   // The base URL of the context that defined the term; its scoped context resolves against it
 
 	termHasColon bool // whether the term contains a colon (:)
 }
@@ -100,6 +105,7 @@ func (td *TermDefinition) Copy() *TermDefinition {
 	result.HasDirection = td.HasDirection
 	result.Language = td.Language
 	result.HasLanguage = td.HasLanguage
+	result.BaseURL = td.BaseURL
 	return &result
 }
 
@@ -472,6 +478,7 @@ func (c *Context) parse(localContext interface{}, baseURL string, remoteContexts
 			defined["@protected"] = true
 		}
 
+		result.termBaseURL = baseURL
 		for key := range contextMap {
 			if _, skip := nonTermDefKeys[key]; !skip {
 				if err := result.createTermDefinition(contextMap, key, defined, overrideProtected); err != nil {
@@ -1022,8 +1029,11 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 
 	// scoped contexts
 	if ctxVal, hasCtx := val["@context"]; hasCtx {
+		// JSON-LD 1.1 API §4.2.2 keeps the base URL with the
+		// scoped context so it resolves where it was defined.
 		definition.Context = ctxVal
 		definition.HasContext = true
+		definition.BaseURL = c.termBaseURL
 	}
 
 	// 17)

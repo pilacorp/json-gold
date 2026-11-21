@@ -97,8 +97,10 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 
 		// Get any property-scoped context for activeProperty
 		var propertyScopedCtx interface{}
+		var propertyScopedBase string
 		if td := activeCtx.GetTermDefinition(activeProperty); td != nil {
 			propertyScopedCtx = td.Context
+			propertyScopedBase = td.BaseURL
 		}
 
 		// second, determine if any type-scoped context should be reverted; it
@@ -137,7 +139,7 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 
 		if propertyScopedCtx != nil {
 			// apply property-scoped context after reverting term-scoped context
-			newCtx, err := activeCtx.parse(propertyScopedCtx, activeCtx.Values.Base, nil, false, true, false, true)
+			newCtx, err := activeCtx.parse(propertyScopedCtx, propertyScopedBase, nil, false, true, false, true)
 			if err != nil {
 				return nil, err
 			}
@@ -193,7 +195,7 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 
 				for _, tt := range types {
 					if td := typeScopedContext.GetTermDefinition(tt); td != nil && td.HasContext {
-						newCtx, err := activeCtx.parse(td.Context, activeCtx.Values.Base, nil, false, false, false, false)
+						newCtx, err := activeCtx.parse(td.Context, td.BaseURL, nil, false, false, false, false)
 						if err != nil {
 							return nil, err
 						}
@@ -690,7 +692,7 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 		if td != nil && td.HasContext {
 			// TODO: fix calling a private method
 			//termCtx, err = activeCtx.Parse(ctx)
-			termCtx, err = activeCtx.parse(td.Context, activeCtx.Values.Base, make([]string, 0), false, true, false, true)
+			termCtx, err = activeCtx.parse(td.Context, td.BaseURL, make([]string, 0), false, true, false, true)
 			if err != nil {
 				return err
 			}
@@ -944,7 +946,7 @@ func (api *JsonLdApi) expandIndexMap(activeCtx *Context, activeProperty string, 
 		indexCtx := activeCtx
 		// if indexKey is @type, there may be a context defined for it
 		if td := activeCtx.GetTermDefinition(key); indexKey == "@type" && td != nil && td.HasContext {
-			newCtx, err := activeCtx.Parse(td.Context)
+			newCtx, err := activeCtx.parse(td.Context, td.BaseURL, make([]string, 0), false, true, false, false)
 			if err != nil {
 				return nil, err
 			}
