@@ -84,12 +84,15 @@ func (api *JsonLdApi) generateNodeMap(nv *nodeValues, element interface{}, graph
 		}
 	}
 
+	// A value or list object reached with no subject node sits directly in
+	// a graph, e.g. a string under a @graph container term (JSON-LD 1.1 API
+	// §5.1.2 step 13.8.3). §7.2.2 gives it no place, and like any
+	// free-floating value (§5.1.2 step 19.1) it is dropped.
 	if IsValue(element) {
 		if list == nil {
-			if subjectNode == nil {
-				return nil, NewJsonLdError(InvalidValueObject, "a value object cannot be a node of a graph")
+			if subjectNode != nil {
+				nv.add(subjectNode, activeProperty, element)
 			}
-			nv.add(subjectNode, activeProperty, element)
 		} else {
 			list["@list"] = append(list["@list"].([]interface{}), element)
 		}
@@ -104,10 +107,9 @@ func (api *JsonLdApi) generateNodeMap(nv *nodeValues, element interface{}, graph
 			return nil, err
 		}
 		if list == nil {
-			if subjectNode == nil {
-				return nil, NewJsonLdError(InvalidSetOrListObject, "a list object cannot be a node of a graph")
+			if subjectNode != nil {
+				nv.add(subjectNode, activeProperty, result)
 			}
-			nv.add(subjectNode, activeProperty, result)
 		} else {
 			list["@list"] = append(list["@list"].([]interface{}), result)
 		}

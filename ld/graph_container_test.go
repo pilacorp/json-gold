@@ -64,10 +64,12 @@ func TestVerifiableCredentialGraphContainerWithNullScopedContext(t *testing.T) {
 	}
 }
 
-// When a string value sits under a term with @container: @graph, expansion
-// wraps it as {"@graph": [{"@value": "..."}]}. GenerateNodeMap must return an
-// error for the value object instead of panicking on a nil subject node.
-func TestGraphContainerStringValueReturnsError(t *testing.T) {
+// JSON-LD 1.1 API §5.1.2 step 13.8.3 wraps every value under a @graph
+// container term in a graph object, so a string becomes
+// {"@graph": [{"@value": "..."}]}. The graph keeps its link triple; the value
+// has no subject in that graph and, like any free-floating value (§5.1.2
+// step 19.1), produces no triple.
+func TestGraphContainerStringValueIsDropped(t *testing.T) {
 	const doc = `{
 		"@context": {
 			"@version": 1.1,
@@ -87,26 +89,14 @@ func TestGraphContainerStringValueReturnsError(t *testing.T) {
 		"type": "VerifiablePresentation",
 		"vc": ["urn:uuid:abc"]
 	}`
-	var input interface{}
-	if err := json.Unmarshal([]byte(doc), &input); err != nil {
-		t.Fatal(err)
-	}
-	opts := NewJsonLdOptions("")
-	opts.Format = "application/n-quads"
-	_, err := NewJsonLdProcessor().ToRDF(input, opts)
-	if err == nil {
-		t.Fatal("expected an error for a value object landing in a graph, got nil")
-	}
-	jErr, ok := err.(*JsonLdError)
-	if !ok || jErr.Code != InvalidValueObject {
-		t.Fatalf("expected InvalidValueObject error, got %v", err)
-	}
+	const want = "_:b0 <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://www.w3.org/2018/credentials#VerifiablePresentation> .\n" +
+		"_:b0 <https://www.w3.org/2018/credentials#verifiableCredential> _:b1 .\n"
+	assertNQuads(t, doc, want)
 }
 
-// A list object under a term with @container: @graph is wrapped as
-// {"@graph": [{"@list": [...]}]}, so it lands in the graph with no subject.
-// GenerateNodeMap must return an error for it too instead of panicking.
-func TestGraphContainerListValueReturnsError(t *testing.T) {
+// A list object under a @graph container term is wrapped the same way and
+// has no subject in the graph either, so only the link triple remains.
+func TestGraphContainerListValueIsDropped(t *testing.T) {
 	const doc = `{
 		"@context": {
 			"@version": 1.1,
@@ -115,14 +105,22 @@ func TestGraphContainerListValueReturnsError(t *testing.T) {
 		"@id": "urn:ex:1",
 		"g": {"@list": ["a"]}
 	}`
+	assertNQuads(t, doc, "<urn:ex:1> <https://example.org/g> _:b0 .\n")
+}
+
+func assertNQuads(t *testing.T, doc, want string) {
+	t.Helper()
 	var input interface{}
 	if err := json.Unmarshal([]byte(doc), &input); err != nil {
 		t.Fatal(err)
 	}
 	opts := NewJsonLdOptions("")
 	opts.Format = "application/n-quads"
-	_, err := NewJsonLdProcessor().ToRDF(input, opts)
-	if err == nil {
-		t.Fatal("expected an error for a list object landing in a graph, got nil")
+	out, err := NewJsonLdProcessor().ToRDF(input, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.(string) != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
 	}
 }
