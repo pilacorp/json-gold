@@ -146,9 +146,10 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 			activeCtx = newCtx
 		}
 
-		// if element has a context, process it
+		// if element has a context, process it with the expansion's base
+		// URL, not the base IRI an outer @base may have set (§5.1.2)
 		if hasContext {
-			newCtx, err := activeCtx.Parse(elemCtx)
+			newCtx, err := activeCtx.parse(elemCtx, opts.Base, nil, false, true, false, false)
 			if err != nil {
 				return nil, err
 			}

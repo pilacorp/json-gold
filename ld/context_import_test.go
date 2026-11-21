@@ -260,3 +260,28 @@ func TestRemoteContextCycleInJSONLD10(t *testing.T) {
 		t.Fatalf("got %v, want %q", err, RecursiveContextInclusion)
 	}
 }
+
+// JSON-LD 1.1 API §5.1.2 processes an embedded @context with the base URL
+// of the expansion, so a relative context URL in a nested node does not
+// resolve against an @base set by an outer context.
+func TestEmbeddedContextIgnoresOuterBase(t *testing.T) {
+	loader := &urlDocumentLoader{docs: map[string]interface{}{
+		"https://doc.org/d/ctx.jsonld": map[string]interface{}{
+			"@context": map[string]interface{}{"y": "https://example.org/y"},
+		},
+	}}
+	opts := NewJsonLdOptions("https://doc.org/d/doc.jsonld")
+	opts.DocumentLoader = loader
+	opts.Format = "application/n-quads"
+	out, err := NewJsonLdProcessor().ToRDF(map[string]interface{}{
+		"@context": map[string]interface{}{"@base": "http://other.org/x/", "p": "https://example.org/p"},
+		"@id":      "urn:s:1",
+		"p":        map[string]interface{}{"@context": "ctx.jsonld", "@id": "urn:s:2", "y": "2"},
+	}, opts)
+	if err != nil {
+		t.Fatalf("loaded %v: %v", loader.got, err)
+	}
+	if want := "<urn:s:2> <https://example.org/y> \"2\" .\n"; !strings.Contains(out.(string), want) {
+		t.Fatalf("got %q, want %q", out, want)
+	}
+}
