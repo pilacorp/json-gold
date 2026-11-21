@@ -1,6 +1,9 @@
 package ld
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // Normalize runs ToRDF on the caller's options, so every expansion option the
 // caller sets applies to it as it does to ToRDF.
@@ -58,7 +61,8 @@ func TestNormalizeKeepsExpansionOptions(t *testing.T) {
 		o.MaxRemoteContexts = 1
 		doc := m{"@context": "https://c.org/1", "@id": "urn:s", "p": "x"}
 		_, err := NewJsonLdProcessor().Normalize(doc, o)
-		if e, ok := err.(*JsonLdError); !ok || e.Code != ContextOverflow {
+		var ldErr *JsonLdError
+		if !errors.As(err, &ldErr) || ldErr.Code != ContextOverflow {
 			t.Fatalf("got %v, want %s", err, ContextOverflow)
 		}
 	})

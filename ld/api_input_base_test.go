@@ -1,6 +1,7 @@
 package ld
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -162,7 +163,8 @@ func TestRemoteInputWithoutDocument(t *testing.T) {
 	o := NewJsonLdOptions("")
 	o.DocumentLoader = &urlDocumentLoader{docs: map[string]interface{}{"https://x.org/doc": nil}}
 	_, err := NewJsonLdProcessor().Expand("https://x.org/doc", o)
-	if e, ok := err.(*JsonLdError); !ok || e.Code != LoadingDocumentFailed {
+	var ldErr *JsonLdError
+	if !errors.As(err, &ldErr) || ldErr.Code != LoadingDocumentFailed {
 		t.Fatalf("got %v, want %s", err, LoadingDocumentFailed)
 	}
 }

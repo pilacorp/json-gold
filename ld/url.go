@@ -273,7 +273,7 @@ func Resolve(baseURI string, pathToResolve string) string {
 		if strings.HasPrefix(r.path, "/") {
 			t.path = removeDotSegmentsRFC3986(r.path)
 		} else {
-			t.path = removeDotSegmentsRFC3986(mergePaths(b, r.path))
+			t.path = removeDotSegmentsRFC3986(mergePaths(&b, r.path))
 		}
 		t.hasQuery, t.query = r.hasQuery, r.query
 	}
@@ -336,7 +336,7 @@ func (u uriReference) String() string {
 }
 
 // mergePaths is RFC 3986 §5.2.3.
-func mergePaths(base uriReference, refPath string) string {
+func mergePaths(base *uriReference, refPath string) string {
 	if base.hasAuthority && base.path == "" {
 		return "/" + refPath
 	}

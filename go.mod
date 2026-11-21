@@ -1,6 +1,6 @@
 module github.com/pilacorp/json-gold
 
-go 1.21
+go 1.27.0
 
 require (
 	github.com/cayleygraph/quad v1.3.0
