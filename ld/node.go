@@ -381,10 +381,12 @@ func parseList(list []interface{}, issuer *IdentifierIssuer, graphName string, t
 			return nil, triples, err
 		}
 		next := NewBlankNode(issuer.GetId(""))
-		triples = append(triples,
-			NewQuad(subj, first, obj, graphName),
-			NewQuad(subj, rest, next, graphName),
-		)
+		// §8.3.2: a null object, such as a relative IRI, gets no
+		// rdf:first triple; the list still links on through rdf:rest.
+		if obj != nil {
+			triples = append(triples, NewQuad(subj, first, obj, graphName))
+		}
+		triples = append(triples, NewQuad(subj, rest, next, graphName))
 		subj = next
 	}
 
@@ -394,10 +396,10 @@ func parseList(list []interface{}, issuer *IdentifierIssuer, graphName string, t
 		if err != nil {
 			return nil, triples, err
 		}
-		triples = append(triples,
-			NewQuad(subj, first, obj, graphName),
-			NewQuad(subj, rest, nilIRI, graphName),
-		)
+		if obj != nil {
+			triples = append(triples, NewQuad(subj, first, obj, graphName))
+		}
+		triples = append(triples, NewQuad(subj, rest, nilIRI, graphName))
 	}
 
 	return res, triples, nil

@@ -27,7 +27,6 @@ var skippedTests = map[string][]string{
 		"#tpr28", // TODO: New test
 		"#tpr38", // TODO: New test
 		"#tpr39", // TODO: New test
-		"#tpr43", // TODO: New test
 	},
 	"testdata/flatten-manifest.jsonld": {},
 	"testdata/fromRdf-manifest.jsonld": {
@@ -63,11 +62,9 @@ var skippedTests = map[string][]string{
 		"#ter56", // TODO: new test
 		"#tli11", // TODO: New test
 		"#tli12", // TODO: New test
-		"#tli14", // TODO: New test
 		"#tpr28", // Skipped in Expand test suite
 		"#tpr38", // TODO
 		"#tpr39", // TODO
-		"#tpr43", // TODO: New test
 		"#ttn02", // TODO
 	},
 	"testdata/html-manifest.jsonld": {
