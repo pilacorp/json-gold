@@ -1125,6 +1125,9 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 			if !DeepCompareTermDef(prevDefinition, definition, false) {
 				return NewJsonLdError(ProtectedTermRedefinition, "invalid JSON-LD syntax; tried to redefine a protected term")
 			}
+			// §4.2.2: an identical redefinition keeps the previous
+			// definition, so its scoped context keeps its base URL.
+			definition = prevDefinition
 		}
 	}
 

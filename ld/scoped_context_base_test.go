@@ -80,3 +80,35 @@ func TestScopedContextResolvesAgainstDefiningContext(t *testing.T) {
 		t.Fatalf("compact got %v, want %v", compacted, want)
 	}
 }
+
+// JSON-LD 1.1 API §4.2.2: an identical redefinition of a protected term
+// keeps the previous definition, including the base URL of its scoped
+// context.
+func TestProtectedRedefinitionKeepsScopedContextBase(t *testing.T) {
+	def := func() map[string]interface{} {
+		return map[string]interface{}{"@context": map[string]interface{}{
+			"@version":   1.1,
+			"@protected": true,
+			"p":          map[string]interface{}{"@id": "https://ex.org/p", "@context": "s.jsonld"},
+		}}
+	}
+	loader := &urlDocumentLoader{docs: map[string]interface{}{
+		"https://ctx.org/a/c.jsonld": def(),
+		"https://ctx.org/b/c.jsonld": def(),
+		"https://ctx.org/a/s.jsonld": map[string]interface{}{"@context": map[string]interface{}{"q": "https://ex.org/q"}},
+	}}
+	opts := NewJsonLdOptions("https://doc.org/d/doc.jsonld")
+	opts.DocumentLoader = loader
+	opts.Format = "application/n-quads"
+	out, err := NewJsonLdProcessor().ToRDF(map[string]interface{}{
+		"@context": []interface{}{"https://ctx.org/a/c.jsonld", "https://ctx.org/b/c.jsonld"},
+		"@id":      "urn:s:1",
+		"p":        map[string]interface{}{"q": "v"},
+	}, opts)
+	if err != nil {
+		t.Fatalf("loaded %v: %v", loader.got, err)
+	}
+	if !strings.Contains(out.(string), `<https://ex.org/q> "v" .`) {
+		t.Fatalf("scoped term lost:\n%s", out)
+	}
+}
