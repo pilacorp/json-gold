@@ -56,7 +56,6 @@ var skippedTests = map[string][]string{
 		"#ter52", // TODO: new test
 		"#ter54", // TODO: new test
 		"#ter56", // TODO: new test
-		"#tli11", // TODO: New test
 		"#tli12", // TODO: New test
 		"#tpr28", // Skipped in Expand test suite
 		"#tpr38", // TODO

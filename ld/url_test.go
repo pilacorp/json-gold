@@ -113,3 +113,50 @@ func TestExpandWithUnparseableID(t *testing.T) {
 		_, _ = NewJsonLdProcessor().ToRDF(doc, opts)
 	})
 }
+
+// Expected values are the RFC 3986 §5.4 examples, plus bases without an
+// authority (DIDs, URNs, tag URIs) resolved by hand with §5.2.2 to §5.2.4.
+func TestResolveFollowsRFC3986(t *testing.T) {
+	const base = "http://a/b/c/d;p?q"
+	rfcExamples := map[string]string{
+		"g:h": "g:h", "g": "http://a/b/c/g", "./g": "http://a/b/c/g", "g/": "http://a/b/c/g/",
+		"/g": "http://a/g", "//g": "http://g", "?y": "http://a/b/c/d;p?y", "g?y": "http://a/b/c/g?y",
+		"#s": "http://a/b/c/d;p?q#s", "g#s": "http://a/b/c/g#s", "g?y#s": "http://a/b/c/g?y#s",
+		";x": "http://a/b/c/;x", "g;x": "http://a/b/c/g;x", "g;x?y#s": "http://a/b/c/g;x?y#s",
+		"": "http://a/b/c/d;p?q", ".": "http://a/b/c/", "./": "http://a/b/c/", "..": "http://a/b/",
+		"../": "http://a/b/", "../g": "http://a/b/g", "../..": "http://a/", "../../": "http://a/",
+		"../../g": "http://a/g", "../../../g": "http://a/g", "../../../../g": "http://a/g",
+		"/./g": "http://a/g", "/../g": "http://a/g", "g.": "http://a/b/c/g.", ".g": "http://a/b/c/.g",
+		"g..": "http://a/b/c/g..", "..g": "http://a/b/c/..g", "./../g": "http://a/b/g",
+		"./g/.": "http://a/b/c/g/", "g/./h": "http://a/b/c/g/h", "g/../h": "http://a/b/c/h",
+		"g;x=1/./y": "http://a/b/c/g;x=1/y", "g;x=1/../y": "http://a/b/c/y",
+		"g?y/./x": "http://a/b/c/g?y/./x", "g?y/../x": "http://a/b/c/g?y/../x",
+		"g#s/./x": "http://a/b/c/g#s/./x", "g#s/../x": "http://a/b/c/g#s/../x", "http:g": "http:g",
+	}
+	for ref, want := range rfcExamples {
+		assert.Equal(t, want, Resolve(base, ref), "reference %q", ref)
+	}
+
+	cases := []struct{ base, ref, want string }{
+		{"ex:", "test", "ex:test"},
+		{"did:example:123", "#key-1", "did:example:123#key-1"},
+		{"did:example:123", "?versionId=1", "did:example:123?versionId=1"},
+		{"did:example:123", "foo", "did:foo"},
+		{"did:example:123", "../x", "did:x"},
+		{"did:example:123", "/p", "did:/p"},
+		{"did:example:123", "//h/p", "did://h/p"},
+		{"urn:uuid:x", "y", "urn:y"},
+		{"tag:a,b:c/d", "e", "tag:a,b:c/e"},
+		{"ex:a/b", "../c", "ex:/c"},
+		{"ex:/a/b", "../c", "ex:/c"},
+		{"http://a/b/c", "x//y", "http://a/b/x//y"},
+		{"http://a/b//c", "d", "http://a/b//d"},
+		{"http://a/b/c#f", "", "http://a/b/c"},
+		{"http://a", "b", "http://a/b"},
+		{"http://a/b", "c%20d", "http://a/c%20d"},
+		{"http://a/b", "é", "http://a/é"},
+	}
+	for _, c := range cases {
+		assert.Equal(t, c.want, Resolve(c.base, c.ref), "%q against %q", c.ref, c.base)
+	}
+}
