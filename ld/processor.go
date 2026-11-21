@@ -570,11 +570,13 @@ func (jldp *JsonLdProcessor) Normalize(input interface{}, opts *JsonLdOptions) (
 			return nil, err
 		}
 	} else {
-		toRDFOpts := NewJsonLdOptions(opts.Base)
-		toRDFOpts.ProcessingMode = opts.ProcessingMode
+		// ToRDF runs on the caller's options, so expansion options such as
+		// SafeMode, ExpandContext and MaxRemoteContexts apply here too.
+		// Normalize needs the dataset, not a serialization, and canonical
+		// N-Quads cannot hold generalized RDF.
+		toRDFOpts := opts.Copy()
 		toRDFOpts.Format = ""
-		// it's important to pass the original DocumentLoader. The default one will be used otherwise!
-		toRDFOpts.DocumentLoader = opts.DocumentLoader
+		toRDFOpts.ProduceGeneralizedRdf = false
 
 		datasetObj, err := jldp.ToRDF(input, toRDFOpts)
 		if err != nil {
