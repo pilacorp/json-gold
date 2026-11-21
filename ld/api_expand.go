@@ -494,11 +494,28 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 						expandedValue = append(Arrayify(resultMap[expandedProperty]), expandedValue)
 					}
 				case map[string]interface{}:
-					if len(v) != 0 {
+					// §5.1.2 step 13.4.4: when framing, an empty map or a
+					// default object whose @default is an IRI.
+					defaultVal, hasDefault := v["@default"]
+					defaultStr, isString := defaultVal.(string)
+					switch {
+					case !frameExpansion:
+						return NewJsonLdError(InvalidTypeValue, "@type value must be a string or array of strings")
+					case len(v) == 0:
+						expandedValue = value
+					case len(v) == 1 && hasDefault && isString:
+						defaultIRI, err := typeScopedContext.ExpandIri(defaultStr, true, true, nil, nil)
+						if err != nil {
+							return err
+						}
+						if !IsAbsoluteIri(defaultIRI) {
+							return NewJsonLdError(InvalidTypeValue, "@default in @type must be an IRI")
+						}
+						expandedValue = map[string]interface{}{"@default": defaultIRI}
+					default:
 						return NewJsonLdError(InvalidTypeValue,
-							"@type value must be a an empty object for framing")
+							"@type value must be an empty object or a default object for framing")
 					}
-					expandedValue = value
 				default:
 					return NewJsonLdError(InvalidTypeValue, v)
 				}

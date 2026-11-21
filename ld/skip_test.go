@@ -48,7 +48,5 @@ var skippedTests = map[string][]string{
 	"testdata/html-manifest.jsonld": {
 		"#t", // HTML inputs not supported yet
 	},
-	"testdata/frame-manifest.jsonld": {
-		"#t0064", // @type with @default value in frame requires expansion changes
-	},
+	"testdata/frame-manifest.jsonld": {},
 }

@@ -512,8 +512,25 @@ func (api *JsonLdApi) matchFrame(state *FramingContext, subjects []string,
 		// For each non-keyword property and objects in frame (other than `@type) that is not in output:
 		// handle defaults
 		for _, prop := range GetOrderedKeys(frame) {
-			// skip keywords
-			// TODO: Unless it's @type ?
+			if prop == "@type" {
+				// A default object in @type gives a node with no @type its
+				// default type (Framing §4.1 step 4.7.4, test #t0064). The
+				// IRI goes in as is: @type values are compacted as IRIs.
+				if _, hasType := output["@type"]; hasType {
+					continue
+				}
+				frameTypes, _ := frame["@type"].([]interface{})
+				if len(frameTypes) > 0 {
+					if defaultObj, isMap := frameTypes[0].(map[string]interface{}); isMap {
+						defaultIRI, isString := defaultObj["@default"].(string)
+						if isString && !GetFrameFlag(defaultObj, "@omitDefault", state.omitDefault) {
+							output["@type"] = []interface{}{defaultIRI}
+						}
+					}
+				}
+				continue
+			}
+			// skip other keywords
 			if IsKeyword(prop) {
 				continue
 			}
@@ -898,6 +915,9 @@ func FilterSubject(state *FramingContext, subject map[string]interface{}, frame 
 					frameType := frame["@type"].([]interface{})
 					if isEmptyObject(frameType[0]) {
 						matchThis = len(nodeValues) > 0
+					} else if _, isDefault := frameType[0].(map[string]interface{}); isDefault {
+						// Framing §4.3: a default object in @type matches any node.
+						matchThis = true
 					} else {
 						// match on a specific @type
 						r := make([]interface{}, 0)
