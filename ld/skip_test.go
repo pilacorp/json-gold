@@ -8,7 +8,6 @@ var skippedTests = map[string][]string{
 	"testdata/compact-manifest.jsonld": {
 		"#tp001", // json-ld-1.0 processing mode is not supported
 		"#t0111", // TODO
-		"#tin",   // TODO
 	},
 	"testdata/expand-manifest.jsonld": {
 		"#t0122", // TODO
@@ -51,6 +50,5 @@ var skippedTests = map[string][]string{
 	},
 	"testdata/frame-manifest.jsonld": {
 		"#t0064", // @type with @default value in frame requires expansion changes
-		"#tin",   // More involved, with @included to pass current subjects instead of frame keys
 	},
 }

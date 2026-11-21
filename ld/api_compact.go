@@ -251,8 +251,10 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 				continue
 			}
 
-			// skip array processing for keywords that aren't @graph or @list
-			if expandedProperty != "@graph" && expandedProperty != "@list" && IsKeyword(expandedProperty) {
+			// skip array processing for keywords that aren't @graph, @list or
+			// @included: §6.1.2 compacts an included block like any property.
+			if expandedProperty != "@graph" && expandedProperty != "@list" && expandedProperty != "@included" &&
+				IsKeyword(expandedProperty) {
 				alias, err := activeCtx.CompactIri(expandedProperty, nil, false, false)
 				if err != nil {
 					return nil, err

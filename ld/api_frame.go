@@ -370,27 +370,24 @@ func (api *JsonLdApi) matchFrame(state *FramingContext, subjects []string,
 
 		// 4.6
 		// If frame has an @included entry, invoke the algorithm using a copy of state with the
-		// value of embedded flag set to false, subjects, frame, output as parent,
-		// and @included as active property.
-		// FIXME: The specification is syntactically incomplete.
-		//        Below implementation reads as if "set to false, included as subjects"
-		if _, hasIncluded := frame["@included"]; hasIncluded {
-			var included = Arrayify(frame["@included"])
-
-			for _, i := range included {
-				stateEmbedded := state.embedded
-				state.embedded = false
-				includeMap, ok := i.(map[string]interface{})
-				if !ok {
-					return nil, fmt.Errorf("expected map[string]interface{} in @included, got %T", i)
-				}
-				includeSubjects := GetOrderedKeys(includeMap)
-				if _, err = api.matchFrame(state, includeSubjects, frame, output, "@included"); err != nil {
-					return nil, err
-				}
-				// reset to current graph
-				state.embedded = stateEmbedded
+		// value of embedded flag set to false, subjects, the @included sub-frame,
+		// output as parent, and @included as active property. The spec text says
+		// "frame"; the sub-frame is what tests #tin01-03 and jsonld.js use.
+		if includedVal, hasIncluded := frame["@included"]; hasIncluded {
+			var includedFrame map[string]interface{}
+			ok := false
+			if frames := Arrayify(includedVal); len(frames) > 0 {
+				includedFrame, ok = frames[0].(map[string]interface{})
 			}
+			if !ok {
+				return nil, NewJsonLdError(InvalidFrame, "@included in a frame must be a node object")
+			}
+			stateEmbedded := state.embedded
+			state.embedded = false
+			if _, err = api.matchFrame(state, subjects, includedFrame, output, "@included"); err != nil {
+				return nil, err
+			}
+			state.embedded = stateEmbedded
 		}
 
 		// 4.7
