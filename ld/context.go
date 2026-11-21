@@ -79,6 +79,11 @@ type Context struct {
 	// overlay on it is in use, and an overlay is never returned to a caller.
 	base    *Context
 	removed map[string]bool
+
+	// overrideProtected is set while parse defines the terms of a local
+	// context, so a term that IRI expansion defines first as a dependency
+	// gets the same protected check as when the loop reaches it.
+	overrideProtected bool
 }
 
 type Values struct {
@@ -759,20 +764,32 @@ func (c *Context) parse(localContext interface{}, baseURL string, remote *remote
 			defined["@protected"] = true
 		}
 
-		result.termBaseURL = baseURL
+		// The entries of a JSON object have no order and Go maps change
+		// theirs between runs. Defining the terms in sorted order makes the
+		// error reported for a context with several errors the same on
+		// every run.
+		keys := make([]string, 0, len(contextMap))
 		for key := range contextMap {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+
+		result.termBaseURL = baseURL
+		result.overrideProtected = overrideProtected
+		for _, key := range keys {
 			if _, skip := nonTermDefKeys[key]; !skip {
 				if err := result.createTermDefinition(contextMap, key, defined, overrideProtected); err != nil {
 					return nil, err
 				}
 			}
 		}
+		result.overrideProtected = false
 		// §4.2.2 step 21 validates a scoped context against the active
 		// context at the time the term is defined, which depends on the
 		// order of the entries. Go maps have no order, so the scoped
 		// contexts are validated once all terms of this context exist; the
 		// result is then the same on every run.
-		for key := range contextMap {
+		for _, key := range keys {
 			if _, skip := nonTermDefKeys[key]; skip || !definesTerm(key, contextMap[key]) {
 				continue
 			}
@@ -1045,7 +1062,7 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 		validKeys["@prefix"] = true
 		validKeys["@protected"] = true
 	}
-	for k := range val {
+	for _, k := range GetOrderedKeys(val) {
 		if _, isValid := validKeys[k]; !isValid {
 			return NewJsonLdError(InvalidTermDefinition, fmt.Sprintf("a term definition must not contain %s", k))
 		}
@@ -1120,7 +1137,8 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 							fmt.Sprintf("term %s expands to %s, not %s", term, res, termIRI),
 						)
 					}
-					delete(defined, term)
+					// Still being defined: its @type and other entries come next.
+					defined[term] = false
 				}
 
 				// NOTE: definition["_prefix"] is implemented in Python and JS libraries as follows:
@@ -1187,8 +1205,6 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 		c.Protected[term] = true
 		definition.Protected = true
 	}
-
-	defined[term] = true
 
 	// 10)
 	if typeValue, present := val["@type"]; present {
@@ -1305,6 +1321,7 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 				for k := range validContainers {
 					allowedValues = append(allowedValues, k)
 				}
+				sort.Strings(allowedValues)
 				return NewJsonLdError(InvalidContainerMapping, fmt.Sprintf(
 					"@context @container value must be one of the following: %q", allowedValues))
 			}
@@ -1443,8 +1460,11 @@ func (c *Context) createTermDefinition(context map[string]interface{}, term stri
 		}
 	}
 
-	// 18)
+	// 18) §4.2.2 step 27: the term counts as defined only now, so a
+	// dependency met while processing its @type, @container or other
+	// entries is a cyclic IRI mapping whichever term the loop starts from.
 	c.setTermDefinition(term, definition)
+	defined[term] = true
 
 	return nil
 }
@@ -1565,7 +1585,7 @@ func (c *Context) ExpandIri(value string, relative bool, vocab bool, context map
 	// 2)
 	if context != nil {
 		if _, containsKey := context[value]; containsKey && !defined[value] {
-			if err := c.createTermDefinition(context, value, defined, false); err != nil {
+			if err := c.createTermDefinition(context, value, defined, c.overrideProtected); err != nil {
 				return "", err
 			}
 		}
@@ -1593,7 +1613,7 @@ func (c *Context) ExpandIri(value string, relative bool, vocab bool, context map
 		// 4.3)
 		if context != nil {
 			if _, containsPrefix := context[prefix]; containsPrefix && !defined[prefix] {
-				if err := c.createTermDefinition(context, prefix, defined, false); err != nil {
+				if err := c.createTermDefinition(context, prefix, defined, c.overrideProtected); err != nil {
 					return "", err
 				}
 			}
