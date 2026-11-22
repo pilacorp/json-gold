@@ -246,3 +246,36 @@ func TestParseContextNilOptions(t *testing.T) {
 		t.Fatalf("namespaces = %v, want ex", got)
 	}
 }
+
+// A node reference under an @id map whose term coerces to @id or @vocab
+// compacts to a plain IRI string, which has no @id entry to take the map key
+// from, so it goes under @none (JSON-LD 1.1 API §6.1.2 step 12.8.9.10), as
+// jsonld.js does. Expanding the result gives the input back.
+func TestCompactIDMapItemCompactedToString(t *testing.T) {
+	for _, coerce := range []string{"@id", "@vocab"} {
+		ctx := map[string]interface{}{"a": map[string]interface{}{
+			"@id": "https://ex.org/a", "@type": coerce, "@container": "@id"}}
+		expanded := []interface{}{map[string]interface{}{
+			"@id":              "urn:s",
+			"https://ex.org/a": []interface{}{map[string]interface{}{"@id": "https://ex.org/o1"}},
+		}}
+		out, err := NewJsonLdProcessor().Compact(expanded, ctx, NewJsonLdOptions(""))
+		if err != nil {
+			t.Fatalf("%s: Compact: %v", coerce, err)
+		}
+		want := map[string]interface{}{
+			"@context": ctx, "@id": "urn:s",
+			"a": map[string]interface{}{"@none": "https://ex.org/o1"},
+		}
+		if !reflect.DeepEqual(out, want) {
+			t.Fatalf("%s: Compact = %v, want %v", coerce, out, want)
+		}
+		back, err := NewJsonLdProcessor().Expand(out, NewJsonLdOptions(""))
+		if err != nil {
+			t.Fatalf("%s: Expand: %v", coerce, err)
+		}
+		if !reflect.DeepEqual(back, expanded) {
+			t.Fatalf("%s: Expand(Compact) = %v, want %v", coerce, back, expanded)
+		}
+	}
+}

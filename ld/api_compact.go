@@ -549,14 +549,15 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 						if err != nil {
 							return nil, err
 						}
-						compactedItemMap := compactedItem.(map[string]interface{})
-						if compactedItemValue, containsValue := compactedItemMap[idKey]; containsValue {
-							// A null @id (keyword-like IRI) leaves map key null,
-							// which becomes @none (§6.1.2 step 12.8.9.10).
-							mapKey, _ = compactedItemValue.(string)
-							delete(compactedItemMap, idKey)
-						} else {
-							mapKey = ""
+						// A null @id (keyword-like IRI) leaves map key null, and
+						// so does an item a coercing term compacted to a plain
+						// IRI string; both go under @none (§6.1.2 step 12.8.9.10).
+						mapKey = ""
+						if compactedItemMap, isMap := compactedItem.(map[string]interface{}); isMap {
+							if compactedItemValue, containsValue := compactedItemMap[idKey]; containsValue {
+								mapKey, _ = compactedItemValue.(string)
+								delete(compactedItemMap, idKey)
+							}
 						}
 					} else if isTypeContainer {
 						typeKey, err := activeCtx.CompactIri("@type", nil, false, false)
