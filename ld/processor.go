@@ -55,7 +55,10 @@ func (jldp *JsonLdProcessor) Compact(input interface{}, context interface{},
 
 	// 7) JSON-LD 1.1 API §9.1 compact() steps 5, 7 and 8: the context
 	// resolves against the input's base URL, and compaction uses its base IRI.
-	context = CloneDocument(context)
+	context, err = copyAsJSONData(context)
+	if err != nil {
+		return nil, err
+	}
 	contextMap, isMap := context.(map[string]interface{})
 	innerCtx, hasCtx := contextMap["@context"]
 	if isMap && hasCtx {
@@ -133,7 +136,11 @@ type apiInput struct {
 func loadInput(input interface{}, opts *JsonLdOptions) (*apiInput, error) {
 	iri, isString := input.(string)
 	if !isString || !strings.Contains(iri, ":") {
-		return &apiInput{document: input}, nil
+		document, err := toJSONData(input)
+		if err != nil {
+			return nil, err
+		}
+		return &apiInput{document: document}, nil
 	}
 	rd, err := opts.DocumentLoader.LoadDocument(iri)
 	if err != nil {
@@ -146,7 +153,11 @@ func loadInput(input interface{}, opts *JsonLdOptions) (*apiInput, error) {
 	if documentURL == "" {
 		documentURL = iri
 	}
-	in := &apiInput{document: rd.Document, documentURL: documentURL}
+	document, err := toJSONData(rd.Document)
+	if err != nil {
+		return nil, err
+	}
+	in := &apiInput{document: document, documentURL: documentURL}
 	if rd.ContextURL != "" {
 		// A relative Link header target resolves against the URL the
 		// document came from (RFC 8288 §3.1, RFC 3986 §5.1.3).
@@ -200,14 +211,16 @@ func (jldp *JsonLdProcessor) expandInput(in *apiInput, opts *JsonLdOptions) ([]i
 
 	// 4)
 	if opts.ExpandContext != nil {
-		exCtx := CloneDocument(opts.ExpandContext)
+		exCtx, err := copyAsJSONData(opts.ExpandContext)
+		if err != nil {
+			return nil, err
+		}
 		if exCtxMap, isMap := exCtx.(map[string]interface{}); isMap {
 			if ctx, hasCtx := exCtxMap["@context"]; hasCtx {
 				exCtx = ctx
 			}
 		}
 
-		var err error
 		activeCtx, err = activeCtx.parse(exCtx, baseURL, nil, false, true, false, false)
 		if err != nil {
 			return nil, err
@@ -290,7 +303,10 @@ func (jldp *JsonLdProcessor) Flatten(input interface{}, context interface{}, opt
 	}
 	opts.Base = in.baseIRI(opts)
 	// 7) the output keeps its own copy of the context, as in Compact.
-	context = CloneDocument(context)
+	context, err = copyAsJSONData(context)
+	if err != nil {
+		return nil, err
+	}
 	contextMap, isMap := context.(map[string]interface{})
 	innerCtx, hasCtx := contextMap["@context"]
 	if isMap && hasCtx {

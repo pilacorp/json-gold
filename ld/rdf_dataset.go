@@ -210,6 +210,10 @@ func (ds *RDFDataset) ParseContext(contextLike interface{}, opts *JsonLdOptions)
 // baseURL, so a context read from a remote document resolves as it did when
 // the document was expanded.
 func (ds *RDFDataset) parseContext(contextLike interface{}, baseURL string, opts *JsonLdOptions) error {
+	contextLike, err := toJSONData(contextLike)
+	if err != nil {
+		return err
+	}
 	// Context will do our recursive parsing and initial IRI resolution
 	context, err := NewContext(nil, opts).parse(contextLike, baseURL, nil, false, true, false, false)
 	if err != nil {

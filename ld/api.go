@@ -19,6 +19,9 @@ package ld
 // underlying algorithms
 //
 // Warning: using this interface directly is highly discouraged. Please use JsonLdProcessor instead.
+// Its methods take documents in the form encoding/json decodes JSON into
+// (map[string]interface{}, []interface{}, string, float64, json.Number, bool
+// and nil); JsonLdProcessor converts other Go values before it calls them.
 type JsonLdApi struct { //nolint:stylecheck
 }
 
