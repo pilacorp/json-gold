@@ -246,3 +246,105 @@ func TestParseContextNilOptions(t *testing.T) {
 		t.Fatalf("namespaces = %v, want ex", got)
 	}
 }
+
+// A node reference under an @id map whose term coerces to @id or @vocab
+// compacts to a plain IRI string, which has no @id entry to take the map key
+// from, so it goes under @none (JSON-LD 1.1 API §6.1.2 step 12.8.9.10), as
+// jsonld.js does. Expanding the result gives the input back.
+func TestCompactIDMapItemCompactedToString(t *testing.T) {
+	for _, coerce := range []string{"@id", "@vocab"} {
+		ctx := map[string]interface{}{"a": map[string]interface{}{
+			"@id": "https://ex.org/a", "@type": coerce, "@container": "@id"}}
+		expanded := []interface{}{map[string]interface{}{
+			"@id":              "urn:s",
+			"https://ex.org/a": []interface{}{map[string]interface{}{"@id": "https://ex.org/o1"}},
+		}}
+		out, err := NewJsonLdProcessor().Compact(expanded, ctx, NewJsonLdOptions(""))
+		if err != nil {
+			t.Fatalf("%s: Compact: %v", coerce, err)
+		}
+		want := map[string]interface{}{
+			"@context": ctx, "@id": "urn:s",
+			"a": map[string]interface{}{"@none": "https://ex.org/o1"},
+		}
+		if !reflect.DeepEqual(out, want) {
+			t.Fatalf("%s: Compact = %v, want %v", coerce, out, want)
+		}
+		back, err := NewJsonLdProcessor().Expand(out, NewJsonLdOptions(""))
+		if err != nil {
+			t.Fatalf("%s: Expand: %v", coerce, err)
+		}
+		if !reflect.DeepEqual(back, expanded) {
+			t.Fatalf("%s: Expand(Compact) = %v, want %v", coerce, back, expanded)
+		}
+	}
+}
+
+// A graph object that no @graph map case takes is wrapped in a map with
+// @graph and added to the term as a plain value (JSON-LD 1.1 API §6.1.2
+// step 12.8.8.4), and a blank node graph is added as its content. IRI
+// compaction can pick an @index term for such a graph object, and when other
+// items of that term build its index map the two cannot share one entry:
+// Compact panicked or merged the map into the graph. It now refuses the input.
+func TestCompactGraphObjectUnderMapContainer(t *testing.T) {
+	named := namedGraphObject("urn:g", "urn:x", "v")
+	blank := namedGraphObject("_:b", "urn:x", "v")
+	simple := map[string]interface{}{"@graph": []interface{}{
+		map[string]interface{}{"@id": "urn:y", "https://ex.org/p": []interface{}{map[string]interface{}{"@value": "w"}}}}}
+	for _, c := range []struct {
+		container    interface{}
+		graph, other interface{}
+	}{
+		{[]interface{}{"@index", "@set"}, named, map[string]interface{}{"@value": "x"}},
+		{"@index", named, map[string]interface{}{"@value": "x"}},
+		{[]interface{}{"@graph", "@index"}, named, simple},
+		{[]interface{}{"@graph", "@index"}, blank, simple},
+		{[]interface{}{"@graph", "@index", "@set"}, blank, simple},
+	} {
+		ctx := map[string]interface{}{"t": map[string]interface{}{"@id": "https://ex.org/t", "@container": c.container}}
+		for _, items := range [][]interface{}{{c.graph, c.other}, {c.other, c.graph}} {
+			expanded := []interface{}{map[string]interface{}{"@id": "urn:s", "https://ex.org/t": items}}
+			out, err := NewJsonLdProcessor().Compact(expanded, ctx, NewJsonLdOptions(""))
+			var ldErr *JsonLdError
+			if !errors.As(err, &ldErr) || ldErr.Code != InvalidContainerMapping {
+				t.Fatalf("%v: Compact = %v, %v; want %s", c.container, out, err, InvalidContainerMapping)
+			}
+		}
+	}
+}
+
+// Graph objects that all go to a map container term as plain values share it
+// as an array, so they need no refusal: the RDF is the same after a round trip.
+func TestCompactGraphObjectsUnderIndexTermStayPlain(t *testing.T) {
+	for _, container := range []interface{}{"@index", []interface{}{"@graph", "@index"}} {
+		ctx := map[string]interface{}{"t": map[string]interface{}{"@id": "https://ex.org/t", "@container": container}}
+		for _, graphIDs := range [][2]string{{"urn:g1", "urn:g2"}, {"_:b1", "_:b2"}, {"_:b1", "urn:g2"}} {
+			expanded := []interface{}{map[string]interface{}{"@id": "urn:s", "https://ex.org/t": []interface{}{
+				namedGraphObject(graphIDs[0], "urn:x", "v"), namedGraphObject(graphIDs[1], "urn:y", "w")}}}
+			out, err := NewJsonLdProcessor().Compact(expanded, ctx, NewJsonLdOptions(""))
+			if err != nil {
+				t.Fatalf("%v %v: Compact: %v", container, graphIDs, err)
+			}
+			if got, want := normalizedNQuads(t, out), normalizedNQuads(t, expanded); got != want {
+				t.Fatalf("%v %v: RDF after Compact =\n%s\nwant\n%s", container, graphIDs, got, want)
+			}
+		}
+	}
+}
+
+func namedGraphObject(graphID, nodeID, value string) map[string]interface{} {
+	return map[string]interface{}{"@id": graphID, "@graph": []interface{}{map[string]interface{}{
+		"@id": nodeID, "https://ex.org/p": []interface{}{map[string]interface{}{"@value": value}}}}}
+}
+
+func normalizedNQuads(t *testing.T, doc interface{}) string {
+	t.Helper()
+	opts := NewJsonLdOptions("")
+	opts.Algorithm = AlgorithmURDNA2015
+	opts.Format = "application/n-quads"
+	out, err := NewJsonLdProcessor().Normalize(doc, opts)
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	return out.(string)
+}

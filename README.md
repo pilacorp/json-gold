@@ -8,7 +8,7 @@ published under its own module path so that projects depending on it get the
 fixes through normal `go get`, not a `replace` directive:
 
 ```shell
-go get github.com/pilacorp/json-gold@v0.9.1-pila.4
+go get github.com/pilacorp/json-gold@v0.9.1-pila.5
 ```
 
 ```go
