@@ -208,10 +208,14 @@ func ExampleJsonLdProcessor_Expand_inmemory() {
 	proc := ld.NewJsonLdProcessor()
 	options := ld.NewJsonLdOptions("")
 
-	// expanding in-memory document
+	// expanding in-memory document with an inline context, so the result
+	// does not depend on what a remote context holds today
 
 	doc := map[string]interface{}{
-		"@context":  "http://schema.org/",
+		"@context": map[string]interface{}{
+			"@vocab": "http://schema.org/",
+			"url":    map[string]interface{}{"@type": "@id"},
+		},
 		"@type":     "Person",
 		"name":      "Jane Doe",
 		"jobTitle":  "Professor",
