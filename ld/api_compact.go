@@ -134,6 +134,18 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 			}
 		}
 
+		// A map container term gets either map entries or plain graph values
+		// (step 12.8.8.4), never both: one JSON entry cannot
+		// hold the two. This records which one each such term got first.
+		termHoldsMap := make(map[string]bool)
+		claimTermShape := func(term string, isMapValue bool) error {
+			if holdsMap, seen := termHoldsMap[term]; seen && holdsMap != isMapValue {
+				return mixedMapContainerError(term)
+			}
+			termHoldsMap[term] = isMapValue
+			return nil
+		}
+
 		// recursively process element keys in order
 		for _, expandedProperty := range GetOrderedKeys(elem) {
 			expandedValue := elem[expandedProperty]
@@ -312,6 +324,7 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 				isIndexContainer := activeCtx.HasContainerMapping(itemActiveProperty, "@index")
 				isIDContainer := activeCtx.HasContainerMapping(itemActiveProperty, "@id")
 				isTypeContainer := activeCtx.HasContainerMapping(itemActiveProperty, "@type")
+				isMapContainer := isLanguageContainer || isIndexContainer || isIDContainer || isTypeContainer
 
 				// if itemActiveProperty is a @nest property, add values to nestResult, otherwise result
 				nestResult := result
@@ -384,6 +397,9 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 				if isGraph {
 					asArray := !compactArrays || isSetContainer
 					if isGraphContainer && (isIDContainer || isIndexContainer && IsSimpleGraph(expandedItemMap)) {
+						if err := claimTermShape(itemActiveProperty, true); err != nil {
+							return nil, err
+						}
 						var mapObject map[string]interface{}
 						if v, present := nestResult[itemActiveProperty]; present {
 							mapObject = v.(map[string]interface{})
@@ -409,10 +425,12 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 
 						// add compactedItem to map, using value of "@id" or a new blank node identifier
 						AddValue(mapObject, mapKey, compactedItem, asArray, false, true, false)
-					} else if isGraphContainer && (IsSimpleGraph(expandedItemMap) || isBlankNodeGraph(expandedItemMap)) {
+					} else if isGraphContainer && (IsSimpleGraph(expandedItemMap) || !isIndexContainer && isBlankNodeGraph(expandedItemMap)) {
 
 						// container includes @graph but not @id or @index and value is a
-						// simple graph object add compact value
+						// simple graph object add compact value. A blank node graph
+						// under @index is wrapped below instead (step 12.8.8.4): added
+						// as its content, it would expand back without the graph.
 						compactedItemArray, isArray := compactedItem.([]interface{})
 						if isArray && len(compactedItemArray) > 1 {
 							// multiple objects in the same graph can't be represented directly,
@@ -429,6 +447,11 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 
 						AddValue(nestResult, itemActiveProperty, compactedItem, asArray, false, true, false)
 					} else {
+						if isMapContainer {
+							if err := claimTermShape(itemActiveProperty, false); err != nil {
+								return nil, err
+							}
+						}
 						// wrap using @graph alias, remove array if only one item and compactArrays not set
 						compactedItemArray, isArray := compactedItem.([]interface{})
 						if isArray && len(compactedItemArray) == 1 && compactArrays {
@@ -465,6 +488,9 @@ func (api *JsonLdApi) Compact(activeCtx *Context, activeProperty string, element
 					}
 				} else if isLanguageContainer || isIndexContainer || isIDContainer || isTypeContainer {
 
+					if err := claimTermShape(itemActiveProperty, true); err != nil {
+						return nil, err
+					}
 					var mapObject map[string]interface{}
 					if v, present := nestResult[itemActiveProperty]; present {
 						mapObject = v.(map[string]interface{})
@@ -635,4 +661,12 @@ func (api *JsonLdApi) checkNestProperty(activeCtx *Context, nestProperty string)
 		return NewJsonLdError(InvalidNestValue, "nested property must have an @nest value resolving to @nest")
 	}
 	return nil
+}
+
+// mixedMapContainerError reports a map container term that would hold both
+// map entries and a graph object added as a plain value (JSON-LD 1.1 API
+// §6.1.2 step 12.8.8.4), which one JSON entry cannot represent.
+func mixedMapContainerError(term string) error {
+	return NewJsonLdError(InvalidContainerMapping,
+		"term "+term+" has a map container, so it cannot hold a graph object next to map entries")
 }
