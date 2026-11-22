@@ -91,12 +91,11 @@ func (jldp *JsonLdProcessor) Compact(input interface{}, context interface{},
 		}
 	}
 
-	if compactedMap, isMap := compacted.(map[string]interface{}); len(compactedMap) > 0 && isMap {
-		setOutputContext(compactedMap, context, opts.CompactArrays)
-	}
+	compactedMap := compacted.(map[string]interface{})
+	setOutputContext(compactedMap, context, opts.CompactArrays)
 
 	// 9)
-	return compacted.(map[string]interface{}), nil
+	return compactedMap, nil
 }
 
 // Expand operation expands the given input according to the steps in the Expansion algorithm:
@@ -253,8 +252,11 @@ func (jldp *JsonLdProcessor) expandInput(in *apiInput, opts *JsonLdOptions) ([]i
 }
 
 // setOutputContext adds the context provided to compacted output, as JSON-LD
-// 1.1 API §9.1 compact() step 9.3 does. An empty context is left out.
+// 1.1 API §9.1 compact() step 9.3 does. A null or empty map context is left out.
 func setOutputContext(output map[string]interface{}, context interface{}, compactArrays bool) {
+	if context == nil {
+		return
+	}
 	if contextList, isList := context.([]interface{}); isList && len(contextList) == 1 && compactArrays {
 		output["@context"] = contextList[0]
 	} else if contextMap, isMap := context.(map[string]interface{}); len(contextMap) > 0 || !isMap {
@@ -265,6 +267,10 @@ func setOutputContext(output map[string]interface{}, context interface{}, compac
 // Flatten operation flattens the given input and compacts it using the passed context
 // according to the steps in the Flattening algorithm:
 // http://www.w3.org/TR/json-ld-api/#flattening-algorithm
+//
+// With a context that is not null once a wrapping @context is removed, the
+// result is a map whose @graph entry (or its alias) holds the nodes, even when
+// none is left; otherwise it is an array.
 func (jldp *JsonLdProcessor) Flatten(input interface{}, context interface{}, opts *JsonLdOptions) (interface{}, error) {
 
 	if opts == nil {
@@ -347,7 +353,7 @@ func (jldp *JsonLdProcessor) Flatten(input interface{}, context interface{}, opt
 		}
 	}
 	// 8)
-	if context != nil && len(flattened) > 0 {
+	if context != nil {
 		// §9.1 flatten() step 6.1 compacts the flattened output, not a remote
 		// document, so compact() step 5 takes the base option as context
 		// base. Without one, opts.Base holds the input's documentUrl.
@@ -363,7 +369,7 @@ func (jldp *JsonLdProcessor) Flatten(input interface{}, context interface{}, opt
 		}
 
 		// The output always holds the default graph in @graph, even for one
-		// node: JSON-LD 1.1 API §2.3 and the 1.0 Flattening Algorithm step 8.
+		// node or none: JSON-LD 1.1 API §2.3 and the 1.0 Flattening Algorithm step 8.
 		if _, isList := compacted.([]interface{}); !isList {
 			compacted = []interface{}{compacted}
 		}
@@ -393,10 +399,6 @@ func (jldp *JsonLdProcessor) Frame(input interface{}, frame interface{}, opts *J
 		opts = opts.Copy()
 	}
 
-	if _, isMap := frame.(map[string]interface{}); isMap {
-		frame = CloneDocument(frame)
-	}
-
 	// 2. Set expanded input to the result of using the expand method using input and options.
 	in, err := loadInput(input, opts)
 	if err != nil {
@@ -418,7 +420,19 @@ func (jldp *JsonLdProcessor) Frame(input interface{}, frame interface{}, opts *J
 	savedExpandedContext := opts.ExpandContext
 	opts.ProcessingMode = JsonLd_1_1_Frame
 	opts.ExpandContext = nil
-	expandedFrame, err := jldp.Expand(frame, opts)
+	// The frame may be an IRI, loaded like the input; the frame read below
+	// must then be a single object.
+	frameIn, err := loadInput(frame, opts)
+	if err != nil {
+		return nil, err
+	}
+	frameMap, isMap := frameIn.document.(map[string]interface{})
+	if !isMap {
+		return nil, NewJsonLdError(InvalidFrame, "Invalid JSON-LD syntax; a JSON-LD frame must be a single object")
+	}
+	frameMap = CloneDocument(frameMap).(map[string]interface{})
+	frameIn.document = frameMap
+	expandedFrame, err := jldp.expandInput(frameIn, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -430,16 +444,17 @@ func (jldp *JsonLdProcessor) Frame(input interface{}, frame interface{}, opts *J
 	api := NewJsonLdApi()
 
 	// FIXME should look for aliases of @graph
-	_, graphInFrame := frame.(map[string]interface{})["@graph"]
+	_, graphInFrame := frameMap["@graph"]
 
 	framed, bnodesToClear, err := api.Frame(expandedInput, expandedFrame, opts, !graphInFrame)
 	if err != nil {
 		return nil, err
 	}
 
-	frameMap := frame.(map[string]interface{})
 	activeCtx := newCallContext(opts)
-	activeCtx, err = activeCtx.Parse(frameMap["@context"])
+	// Framing 1.1 frame() step 8: the frame's context resolves against the
+	// frame's documentUrl, as when the frame was expanded.
+	activeCtx, err = activeCtx.parse(frameMap["@context"], frameIn.baseURL(opts), nil, false, true, false, false)
 	if err != nil {
 		return nil, err
 	}
@@ -468,9 +483,11 @@ func (jldp *JsonLdProcessor) Frame(input interface{}, frame interface{}, opts *J
 		rval[graphAlias] = compacted
 	} else if opts.OmitGraph {
 		// leave as is
-		tmp := rval["@context"]
+		tmp, hasContext := rval["@context"]
 		rval = compacted.(map[string]interface{})
-		rval["@context"] = tmp
+		if hasContext {
+			rval["@context"] = tmp
+		}
 	} else {
 		if _, isList := compacted.([]interface{}); !isList {
 			compacted = []interface{}{compacted}
@@ -543,9 +560,9 @@ func (jldp *JsonLdProcessor) fromRDF(input interface{}, opts *JsonLdOptions, ser
 		if opts.OutputForm == "expanded" {
 			return rval, nil
 		} else if opts.OutputForm == "compacted" {
-			return jldp.Compact(rval, dataset.context, opts)
+			return jldp.Compact(rval, dataset.GetContext(), opts)
 		} else if opts.OutputForm == "flattened" {
-			return jldp.Flatten(rval, dataset.context, opts)
+			return jldp.Flatten(rval, dataset.GetContext(), opts)
 		} else {
 			return nil, NewJsonLdError(UnknownError, fmt.Sprintf("Output form was unknown: %s", opts.OutputForm))
 		}
@@ -568,7 +585,11 @@ func (jldp *JsonLdProcessor) ToRDF(input interface{}, opts *JsonLdOptions) (inte
 		opts = opts.Copy()
 	}
 
-	expandedInput, err := jldp.expand(input, opts)
+	in, err := loadInput(input, opts)
+	if err != nil {
+		return nil, err
+	}
+	expandedInput, err := jldp.expandInput(in, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -581,16 +602,21 @@ func (jldp *JsonLdProcessor) ToRDF(input interface{}, opts *JsonLdOptions) (inte
 
 	// generate namespaces from context
 	if opts.UseNamespaces {
-		var _input []map[string]interface{}
-		if inputList, isList := input.([]map[string]interface{}); isList {
-			_input = inputList
-		} else {
-			_input = make([]map[string]interface{}, 1)
-			_input[0] = make(map[string]interface{})
+		docs := Arrayify(in.document)
+		if maps, isMaps := in.document.([]map[string]interface{}); isMaps {
+			docs = make([]interface{}, len(maps))
+			for i, m := range maps {
+				docs[i] = m
+			}
 		}
-		for _, e := range _input {
-			if ctxVal, hasCtx := e["@context"]; hasCtx {
-				if err = dataset.ParseContext(ctxVal, opts); err != nil {
+		// The contexts resolve against the base URL and base IRI the
+		// expansion above used.
+		nsOpts := opts.Copy()
+		nsOpts.Base = in.baseIRI(opts)
+		for _, e := range docs {
+			elem, _ := e.(map[string]interface{})
+			if ctxVal, hasCtx := elem["@context"]; hasCtx {
+				if err = dataset.parseContext(ctxVal, in.baseURL(opts), nsOpts); err != nil {
 					return nil, err
 				}
 			}
@@ -629,10 +655,7 @@ func (jldp *JsonLdProcessor) Normalize(input interface{}, opts *JsonLdOptions) (
 		if opts.InputFormat != "application/n-quads" && opts.InputFormat != "application/nquads" {
 			return nil, NewJsonLdError(UnknownFormat, "Unknown normalization input format")
 		}
-		serializer, hasSerializer := rdfSerializers[opts.Format]
-		if !hasSerializer {
-			return nil, NewJsonLdError(UnknownFormat, opts.Format)
-		}
+		serializer := rdfSerializers[opts.InputFormat]
 		var err error
 		if dataset, err = serializer.Parse(input); err != nil {
 			return nil, err

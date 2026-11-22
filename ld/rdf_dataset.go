@@ -198,11 +198,20 @@ func (ds *RDFDataset) GetContext() map[string]interface{} {
 }
 
 // ParseContext parses a context object and sets any namespaces found within it.
+// Relative context IRIs resolve against the base option.
 func (ds *RDFDataset) ParseContext(contextLike interface{}, opts *JsonLdOptions) error {
-	context := NewContext(nil, opts)
+	if opts == nil {
+		opts = NewJsonLdOptions("")
+	}
+	return ds.parseContext(contextLike, opts.Base, opts)
+}
 
+// parseContext is ParseContext with relative context IRIs resolved against
+// baseURL, so a context read from a remote document resolves as it did when
+// the document was expanded.
+func (ds *RDFDataset) parseContext(contextLike interface{}, baseURL string, opts *JsonLdOptions) error {
 	// Context will do our recursive parsing and initial IRI resolution
-	context, err := context.Parse(contextLike)
+	context, err := NewContext(nil, opts).parse(contextLike, baseURL, nil, false, true, false, false)
 	if err != nil {
 		return err
 	}
