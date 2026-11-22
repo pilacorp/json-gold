@@ -16,6 +16,7 @@
 package ld
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -393,6 +394,10 @@ func (c *Context) clearProtectedNull(term string) {
 // than just parsing the context. In particular, we need to check if additional logic is required
 // to load remote scoped contexts.
 func (c *Context) Parse(localContext interface{}) (*Context, error) {
+	localContext, err := toJSONData(localContext)
+	if err != nil {
+		return nil, err
+	}
 	return c.parse(localContext, c.Values.Base, nil, false, true, false, false)
 }
 
@@ -485,6 +490,16 @@ func (c *Context) loadContextDocument(uri string, remote *remoteContexts) (*Remo
 	if err != nil {
 		return nil, NewJsonLdError(LoadingRemoteContextFailed,
 			fmt.Errorf("dereferencing a URL did not result in a valid JSON-LD context (%s): %w", uri, err))
+	}
+	if rd != nil {
+		document, err := toJSONData(rd.Document)
+		if err != nil {
+			return nil, NewJsonLdError(LoadingRemoteContextFailed,
+				fmt.Errorf("the context loaded from %s is not JSON data: %w", uri, err))
+		}
+		converted := *rd
+		converted.Document = document
+		rd = &converted
 	}
 	cache[uri] = rd
 	return rd, nil
@@ -608,14 +623,14 @@ func (c *Context) parse(localContext interface{}, baseURL string, remote *remote
 		pm := c.Values.processingMode
 
 		if versionValue, versionPresent := contextMap["@version"]; versionPresent {
-			if versionValue != 1.1 {
-				return nil, NewJsonLdError(InvalidVersionValue, fmt.Sprintf("unsupported JSON-LD version: %s", versionValue))
+			ver, isVersion := versionNumber(versionValue)
+			if !isVersion || ver != 1.1 {
+				return nil, NewJsonLdError(InvalidVersionValue, fmt.Sprintf("unsupported JSON-LD version: %v", versionValue))
 			}
 			if pm == JsonLd_1_0 {
 				return nil, NewJsonLdError(ProcessingModeConflict, fmt.Sprintf("@version: %v not compatible with %s", versionValue, pm))
 			}
 			result.Values.processingMode = JsonLd_1_1
-			ver := versionValue.(float64)
 			result.Values.Version = &ver
 		} else if pm == "" {
 			// if not set explicitly, set processingMode to "json-ld-1.0"
@@ -2630,4 +2645,18 @@ func (c *Context) Serialize() (map[string]interface{}, error) {
 		rval["@context"] = ctx
 	}
 	return rval, nil
+}
+
+// versionNumber reads @version as a number, whether the context was decoded
+// into float64 or, with UseNumber, into json.Number.
+func versionNumber(value interface{}) (float64, bool) {
+	switch v := value.(type) {
+	case float64:
+		return v, true
+	case json.Number:
+		f, err := v.Float64()
+		return f, err == nil
+	default:
+		return 0, false
+	}
 }

@@ -316,7 +316,11 @@ func objectToRDF(item interface{}, issuer *IdentifierIssuer, graphName string, t
 			}
 		}
 
-		isInteger := isFloat && floatVal == float64(int64(floatVal))
+		// JSON-LD 1.1 API §8.2.2 steps 10 and 11: a number with no
+		// fractional part and an absolute value below 10^21 is an
+		// xsd:integer. int64(floatVal) is not used: a float64 at or above
+		// 2^63 converts to a different int64 on each CPU architecture.
+		isInteger := isFloat && math.Trunc(floatVal) == floatVal && math.Abs(floatVal) < 1e21
 
 		datatypeStr, _ := datatype.(string)
 		if isBool || isFloat {
@@ -336,9 +340,9 @@ func objectToRDF(item interface{}, issuer *IdentifierIssuer, graphName string, t
 				}
 			} else {
 				if datatype == nil {
-					return NewLiteral(fmt.Sprintf("%d", int64(floatVal)), XSDInteger, ""), triples, nil
+					return NewLiteral(canonicalInteger(floatVal), XSDInteger, ""), triples, nil
 				} else {
-					return NewLiteral(fmt.Sprintf("%d", int64(floatVal)), datatype.(string), ""), triples, nil
+					return NewLiteral(canonicalInteger(floatVal), datatype.(string), ""), triples, nil
 				}
 			}
 		} else if langVal, hasLang := itemMap["@language"]; hasLang {
@@ -426,4 +430,14 @@ func parseList(list []interface{}, issuer *IdentifierIssuer, graphName string, t
 	}
 
 	return res, triples, nil
+}
+
+// canonicalInteger writes an integral float64 below 10^21 in the canonical
+// lexical form of JSON-LD 1.1 API §8.6: decimal digits with an optional
+// leading minus sign, so no exponent and no "-0".
+func canonicalInteger(f float64) string {
+	if f == 0 {
+		return "0"
+	}
+	return strconv.FormatFloat(f, 'f', 0, 64)
 }
