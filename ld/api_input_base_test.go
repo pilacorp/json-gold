@@ -34,7 +34,7 @@ const redirectedInput = "https://a.org/old/doc.jsonld"
 // compaction context can pick a wrong ctx.jsonld.
 const redirectedAbsInput = "https://a.org/old/abs.jsonld"
 
-// JSON-LD 1.1 API §9.2 expand() steps 5, 6 and 8: the base option overrides
+// JSON-LD 1.1 API §9.1 expand() steps 5, 6 and 8: the base option overrides
 // only the base IRI. The document's own contexts and expandContext resolve
 // against the documentUrl.
 func TestExpandRemoteInputBase(t *testing.T) {
@@ -76,7 +76,7 @@ func TestExpandRemoteInputBase(t *testing.T) {
 	}
 }
 
-// §9.2 compact() steps 3, 5, 7 and 8: the input is dereferenced once, its
+// §9.1 compact() steps 3, 5, 7 and 8: the input is dereferenced once, its
 // context resolves against the documentUrl after redirects, and so does a
 // relative compaction context. The base IRI for compaction is the base
 // option, else the document's IRI.
@@ -138,7 +138,7 @@ func TestFrameRemoteInputBase(t *testing.T) {
 	}
 }
 
-// §9.2 flatten() step 6 compacts the flattened output, which is not a remote
+// §9.1 flatten() step 6 compacts the flattened output, which is not a remote
 // document, so compact() step 5 resolves the context against the base option.
 func TestFlattenContextUsesBaseOption(t *testing.T) {
 	type m = map[string]interface{}
@@ -157,7 +157,7 @@ func TestFlattenContextUsesBaseOption(t *testing.T) {
 	}
 }
 
-// §9.2 expand() step 4: a remote input with no document is a loading
+// §9.1 expand() step 4: a remote input with no document is a loading
 // document failed error, not an empty result.
 func TestRemoteInputWithoutDocument(t *testing.T) {
 	o := NewJsonLdOptions("")
