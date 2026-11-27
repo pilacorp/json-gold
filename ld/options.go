@@ -88,6 +88,23 @@ type JsonLdOptions struct { //nolint:stylecheck
 	// Zero or negative means DefaultMaxRemoteContexts.
 	MaxRemoteContexts int
 
+	// MaxScopedContexts limits how many times one processor call runs the
+	// Context Processing algorithm on a term's scoped context or on a node's
+	// own @context. JSON-LD 1.1 API (W3C REC 2020-07-16) does so in §5.1.2
+	// steps 8, 9, 11.2 and 13.8.3.2 and §6.1.2 steps 6.1 and 11.1, and this
+	// processor also for @nest, as the JSON-LD 1.2 draft's §5.1.2 step 14.2.2
+	// does. It runs once for every object under a property-scoped term and
+	// every node of a type-scoped type, so a small document that uses a large
+	// context many times costs uses times its size. Zero or negative means no
+	// limit. Past the limit the call fails with ScopedContextOverflow. Only
+	// calls through JsonLdProcessor count, as they keep per-call state.
+	MaxScopedContexts int
+
+	// scopedApplied counts toward MaxScopedContexts across the expansion and
+	// compaction phases of one exported call. Copy leaves it out, so every
+	// call, which copies the options first, starts at zero.
+	scopedApplied *int
+
 	// ExpandedElementHandler, when set, is called during expansion for each
 	// node object expansion keeps, with that object's JSON Pointer and the
 	// result of expanding it. See ElementHandler.
@@ -123,6 +140,15 @@ func NewJsonLdOptions(base string) *JsonLdOptions { //nolint:stylecheck
 	}
 }
 
+// callCounter returns the call's MaxScopedContexts counter, creating it on
+// first use.
+func (opt *JsonLdOptions) callCounter() *int {
+	if opt.scopedApplied == nil {
+		opt.scopedApplied = new(int)
+	}
+	return opt.scopedApplied
+}
+
 // Copy creates a deep copy of JsonLdOptions object.
 func (opt *JsonLdOptions) Copy() *JsonLdOptions {
 	return &JsonLdOptions{
@@ -149,5 +175,6 @@ func (opt *JsonLdOptions) Copy() *JsonLdOptions {
 		SafeMode:               opt.SafeMode,
 		ExpandedElementHandler: opt.ExpandedElementHandler,
 		MaxRemoteContexts:      opt.MaxRemoteContexts,
+		MaxScopedContexts:      opt.MaxScopedContexts,
 	}
 }
