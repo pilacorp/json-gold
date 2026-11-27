@@ -66,7 +66,11 @@ type Context struct {
 
 	// validated holds the scoped contexts validateScopedContext has checked
 	// in this processor call. It is shared and nil like documents.
-	validated map[scopedContextKey]bool
+	validated map[scopedContextKey]*scopedChecks
+
+	// reads, while validateScopedContext checks a scoped context against
+	// this context, collects every term looked up in it. It is not copied.
+	reads map[string]bool
 
 	// scopedApplied counts the scoped and node contexts this processor call
 	// processed, toward JsonLdOptions.MaxScopedContexts: every phase of the
@@ -336,6 +340,9 @@ func (c *Context) flat() *Context {
 
 func (c *Context) termDefinition(term string) (*TermDefinition, bool) {
 	for ctx := c; ctx != nil; ctx = ctx.base {
+		if ctx.reads != nil {
+			ctx.reads[term] = true
+		}
 		if td, ok := ctx.TermDefinitions[term]; ok {
 			return td, true
 		}
@@ -376,6 +383,9 @@ func (c *Context) hasProtected() bool {
 // records a flag an overlay cleared.
 func (c *Context) isProtectedNull(term string) bool {
 	for ctx := c; ctx != nil; ctx = ctx.base {
+		if ctx.reads != nil {
+			ctx.reads[term] = true
+		}
 		if isNull, ok := ctx.protectedNull[term]; ok {
 			return isNull
 		}
@@ -421,64 +431,33 @@ type remoteContexts struct {
 	loaded    map[string]*RemoteDocument
 	processed int
 
+	// included is the remote contexts list of §4.1.2: the context URLs on
+	// the way here. What a recursion adds is taken back when it returns, as
+	// it works on a copy (step 5.2.6), so a URL processed under an earlier
+	// sibling's remote context is not on it. validating is the
+	// algorithm's "validate scoped context" set to false (§4.2.2 step 21.3):
+	// then a URL already included is not processed again (§4.1.2 step 5.2.2).
+	included   map[string]bool
+	validating bool
+	// added lists the URLs this list gained, in order, so a recursion's
+	// additions are taken back when it returns: the copy of step 5.2.6
+	// without copying the list at every remote context.
+	added []string
+	// processedURLs collects, across one check, every URL it processed, so
+	// the check's result is not reused where one of them would be skipped.
+	processedURLs map[string]bool
+	// peak is the highest processed count reached, nested checks included,
+	// so a reused check stays within the processor limit of step 5.2.3
+	// (MaxRemoteContexts, counted as loads).
+	peak int
+	// skipped records that step 5.2.2 skipped a context, so the result
+	// depends on the remote contexts list and is not cached.
+	skipped bool
+
 	// validated stands in for Context.validated on a Context the caller
-	// builds, so a scoped context that names itself is validated once.
-	validated map[scopedContextKey]bool
-}
-
-// scopedContextKey names one scoped context value for validateScopedContext:
-// a resolved URL, or the identity of an inline map or array, with its base.
-// An array also needs its length, as two arrays can share a backing store.
-type scopedContextKey struct {
-	url  string
-	ptr  uintptr
-	len  int
-	base string
-}
-
-// validateScopedContext is JSON-LD 1.1 API §4.2.2 step 21: the scoped context
-// of a term definition is processed when the term is defined, so an error in
-// it is reported even if the term is never used. The result is discarded; the
-// scoped context is processed again where it applies.
-//
-// As step 21 says, the validation works on a copy of remote contexts, so the
-// contexts it loads do not count toward the caller's limit. Each scoped
-// context value is validated once per processor call: applying a scoped
-// context defines its terms again, and validating their scoped contexts
-// every time would repeat the whole nested tree for each value of the term.
-func (c *Context) validateScopedContext(termValue interface{}, baseURL string, remote *remoteContexts) error {
-	termMap, isMap := termValue.(map[string]interface{})
-	scoped, hasScoped := termMap["@context"]
-	if !isMap || !hasScoped {
-		return nil
-	}
-	key := scopedContextKey{base: baseURL}
-	switch v := scoped.(type) {
-	case string:
-		key.url = Resolve(baseURL, v)
-	case map[string]interface{}:
-		key.ptr = reflect.ValueOf(v).Pointer()
-	case []interface{}:
-		key.ptr, key.len = reflect.ValueOf(v).Pointer(), len(v)
-	}
-	validated := c.validated
-	if validated == nil {
-		if remote.validated == nil {
-			remote.validated = make(map[scopedContextKey]bool)
-		}
-		validated = remote.validated
-	}
-	if key.url != "" || key.ptr != 0 {
-		if validated[key] {
-			return nil
-		}
-		validated[key] = true
-	}
-	copied := &remoteContexts{loaded: remote.loaded, processed: remote.processed, validated: remote.validated}
-	if _, err := c.overlay().parse(scoped, baseURL, copied, false, true, false, true); err != nil {
-		return NewJsonLdError(InvalidScopedContext, err)
-	}
-	return nil
+	// builds, so a scoped context that names itself is not checked again
+	// while its own check runs.
+	validated map[scopedContextKey]*scopedChecks
 }
 
 // loadContextDocument dereferences a context URL, or returns the document
@@ -586,6 +565,20 @@ func (c *Context) parse(localContext interface{}, baseURL string, remote *remote
 			if limit <= 0 {
 				limit = DefaultMaxRemoteContexts
 			}
+			if remote.validating && remote.included[uri] {
+				remote.skipped = true
+				continue
+			}
+			if remote.included == nil {
+				remote.included = make(map[string]bool)
+			}
+			if !remote.included[uri] {
+				remote.included[uri] = true
+				remote.added = append(remote.added, uri)
+			}
+			if remote.processedURLs != nil {
+				remote.processedURLs[uri] = true
+			}
 			if remote.processed >= limit {
 				if result.processingMode(1.0) {
 					return nil, NewJsonLdError(RecursiveContextInclusion, uri)
@@ -593,6 +586,7 @@ func (c *Context) parse(localContext interface{}, baseURL string, remote *remote
 				return nil, NewJsonLdError(ContextOverflow, uri)
 			}
 			remote.processed++
+			remote.peak = max(remote.peak, remote.processed)
 
 			rd, err := c.loadContextDocument(uri, remote)
 			if err != nil {
@@ -614,7 +608,14 @@ func (c *Context) parse(localContext interface{}, baseURL string, remote *remote
 			if ctxBase == "" {
 				ctxBase = uri
 			}
+			// Step 5.2.6 passes a copy of remote contexts: what the remote
+			// context adds stays on its own way, so it is taken back here.
+			mark := len(remote.added)
 			resultRef, err := result.parse(context, ctxBase, remote, true, true, false, overrideProtected)
+			for _, added := range remote.added[mark:] {
+				delete(remote.included, added)
+			}
+			remote.added = remote.added[:mark]
 			if err != nil {
 				return nil, err
 			}
