@@ -1570,12 +1570,15 @@ func (c *Context) ignoreTermDefinition(term string, prev *TermDefinition, define
 }
 
 // RevertToPreviousContext reverts any type-scoped context in this active context to the previous context.
+// It returns the previous context itself, not a copy: a context is not changed
+// once built (parse works on a clone), and a copy would cost the number of
+// terms for every node the revert applies to. Callers must not modify the
+// result.
 func (c *Context) RevertToPreviousContext() *Context {
 	if c.previousContext == nil {
 		return c
-	} else {
-		return CopyContext(c.previousContext)
 	}
+	return c.previousContext
 }
 
 // rejectKeywordLike returns an error in safe mode, where a keyword-like IRI
