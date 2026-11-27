@@ -68,6 +68,11 @@ type Context struct {
 	// in this processor call. It is shared and nil like documents.
 	validated map[scopedContextKey]bool
 
+	// scopedApplied counts the scoped and node contexts this processor call
+	// processed, toward JsonLdOptions.MaxScopedContexts: every phase of the
+	// call shares it. It is nil on a Context the caller builds.
+	scopedApplied *int
+
 	// protectedNull holds the protected terms whose IRI mapping is null.
 	// TermDefinitions keeps such a term as nil, which cannot carry the flag.
 	protectedNull map[string]bool
@@ -245,6 +250,7 @@ func CopyContext(ctx *Context) *Context {
 	context := NewContext(nil, ctx.options)
 	context.documents = ctx.documents
 	context.validated = ctx.validated
+	context.scopedApplied = ctx.scopedApplied
 	if ctx.Values != nil {
 		values := *ctx.Values
 		context.Values = &values
@@ -287,6 +293,7 @@ func (c *Context) overlay() *Context {
 		previousContext: c.previousContext,
 		documents:       c.documents,
 		validated:       c.validated,
+		scopedApplied:   c.scopedApplied,
 		base:            c,
 	}
 }
@@ -557,6 +564,7 @@ func (c *Context) parse(localContext interface{}, baseURL string, remote *remote
 			nullCtx := NewContext(nil, c.options)
 			nullCtx.documents = c.documents
 			nullCtx.validated = c.validated
+			nullCtx.scopedApplied = c.scopedApplied
 			if !propagate {
 				nullCtx.previousContext = result
 			}
@@ -2659,4 +2667,26 @@ func versionNumber(value interface{}) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// applyScoped processes td's scoped context against c, counting it toward
+// JsonLdOptions.MaxScopedContexts first.
+func (c *Context) applyScoped(td *TermDefinition, propagate, overrideProtected bool) (*Context, error) {
+	if err := c.countContext(); err != nil {
+		return nil, err
+	}
+	return c.parse(td.Context, td.BaseURL, nil, false, propagate, false, overrideProtected)
+}
+
+// countContext counts one application of a scoped or embedded context toward
+// JsonLdOptions.MaxScopedContexts.
+func (c *Context) countContext() error {
+	if c.scopedApplied == nil || c.options == nil || c.options.MaxScopedContexts <= 0 {
+		return nil
+	}
+	if *c.scopedApplied >= c.options.MaxScopedContexts {
+		return NewJsonLdError(ScopedContextOverflow, c.options.MaxScopedContexts)
+	}
+	*c.scopedApplied++
+	return nil
 }

@@ -93,6 +93,10 @@ const (
 	// out of the dataset for an IRI or language tag that is not well-formed.
 	InvalidRdfTerm ErrorCode = "invalid RDF term"
 	UnknownError   ErrorCode = "unknown error"
+	// ScopedContextOverflow is a resource limit of this processor (JSON-LD
+	// 1.1 §C), not a JSON-LD 1.1 API §9.6.2 code: JsonLdOptions.
+	// MaxScopedContexts was passed.
+	ScopedContextOverflow ErrorCode = "scoped context overflow"
 )
 
 func (e JsonLdError) Error() string {

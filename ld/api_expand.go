@@ -96,11 +96,9 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 		}
 
 		// Get any property-scoped context for activeProperty
-		var propertyScopedCtx interface{}
-		var propertyScopedBase string
-		if td := activeCtx.GetTermDefinition(activeProperty); td != nil {
-			propertyScopedCtx = td.Context
-			propertyScopedBase = td.BaseURL
+		var propertyScoped *TermDefinition
+		if td := activeCtx.GetTermDefinition(activeProperty); td != nil && td.Context != nil {
+			propertyScoped = td
 		}
 
 		// second, determine if any type-scoped context should be reverted; it
@@ -137,9 +135,9 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 			activeCtx = activeCtx.RevertToPreviousContext()
 		}
 
-		if propertyScopedCtx != nil {
+		if propertyScoped != nil {
 			// apply property-scoped context after reverting term-scoped context
-			newCtx, err := activeCtx.parse(propertyScopedCtx, propertyScopedBase, nil, false, true, false, true)
+			newCtx, err := activeCtx.applyScoped(propertyScoped, true, true)
 			if err != nil {
 				return nil, err
 			}
@@ -149,6 +147,9 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 		// if element has a context, process it with the expansion's base
 		// URL, not the base IRI an outer @base may have set (§5.1.2)
 		if hasContext {
+			if err := activeCtx.countContext(); err != nil {
+				return nil, err
+			}
 			newCtx, err := activeCtx.parse(elemCtx, opts.Base, nil, false, true, false, false)
 			if err != nil {
 				return nil, err
@@ -196,7 +197,7 @@ func (api *JsonLdApi) expandElement(activeCtx *Context, activeProperty string, e
 
 				for _, tt := range types {
 					if td := typeScopedContext.GetTermDefinition(tt); td != nil && td.HasContext {
-						newCtx, err := activeCtx.parse(td.Context, td.BaseURL, nil, false, false, false, false)
+						newCtx, err := activeCtx.applyScoped(td, false, false)
 						if err != nil {
 							return nil, err
 						}
@@ -789,7 +790,7 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 		if td != nil && td.HasContext {
 			// TODO: fix calling a private method
 			//termCtx, err = activeCtx.Parse(ctx)
-			termCtx, err = activeCtx.parse(td.Context, td.BaseURL, nil, false, true, false, true)
+			termCtx, err = activeCtx.applyScoped(td, true, true)
 			if err != nil {
 				return err
 			}
@@ -1009,7 +1010,7 @@ func (api *JsonLdApi) expandObject(activeCtx *Context, activeProperty string, ex
 		nestCtx := activeCtx
 		if td := activeCtx.GetTermDefinition(n); td != nil && td.HasContext {
 			var err error
-			nestCtx, err = activeCtx.parse(td.Context, td.BaseURL, nil, false, true, false, true)
+			nestCtx, err = activeCtx.applyScoped(td, true, true)
 			if err != nil {
 				return err
 			}
@@ -1061,7 +1062,7 @@ func (api *JsonLdApi) expandIndexMap(activeCtx *Context, activeProperty string, 
 		indexCtx := activeCtx
 		// if indexKey is @type, there may be a context defined for it
 		if td := activeCtx.GetTermDefinition(key); indexKey == "@type" && td != nil && td.HasContext {
-			newCtx, err := activeCtx.parse(td.Context, td.BaseURL, nil, false, true, false, false)
+			newCtx, err := activeCtx.applyScoped(td, true, false)
 			if err != nil {
 				return nil, err
 			}
